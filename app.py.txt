@@ -1,0 +1,81 @@
+import streamlit as st
+import os
+import yfinance as yf
+from crewai import Agent, Task, Crew
+from crewai_tools import TavilySearchTool
+from langchain_google_genai import ChatGoogleGenerativeAI
+
+# UI Setup
+st.set_page_config(page_title="2026 AI Wealth Advisor", layout="centered")
+st.title("🇮🇳 Indian Stock & Portfolio Advisor (Free)")
+
+# Sidebar for Setup
+with st.sidebar:
+    st.header("Settings")
+    gemini_key = st.text_input("Gemini API Key", type="AIzaSyAML67MLetuoXIsxN3597SH6WsX7XcJ6Rk")
+    tavily_key = st.text_input("Tavily API Key", type="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")
+    st.info("Uses Gemini 2.5 Flash (Free Tier)")
+
+# Input Section
+ticker = st.text_input("Enter Ticker (e.g., RELIANCE.NS, 500325.BO, or Mutual Fund ID):")
+
+# New Feature: Portfolio Check
+is_holding = st.checkbox("I am currently holding this stock/fund")
+buy_price = 0.0
+if is_holding:
+    buy_price = st.number_input("At what price did you buy it?", min_value=0.0)
+
+if st.button("Analyze & Recommend"):
+    if not gemini_key or not tavily_key:
+        st.warning("Please enter your API keys in the sidebar.")
+    else:
+        os.environ["GOOGLE_API_KEY"] = gemini_key
+        os.environ["TAVILY_API_KEY"] = tavily_key
+        
+        # 1. Fetch Real-time Data (Free via yfinance)
+        data = yf.Ticker(ticker)
+        info = data.info
+        curr_price = info.get('currentPrice', info.get('navPric', 0)) # navPric for Mutual Funds
+        high_52 = info.get('fiftyTwoWeekHigh', 0)
+        low_52 = info.get('fiftyTwoWeekLow', 0)
+
+        # 2. Agent Setup (Gemini 2.5 Flash)
+        llm = ChatGoogleGenerativeAI(model="gemini-2.5-flash")
+        search_tool = TavilySearchTool(topic="finance")
+
+        advisor = Agent(
+            role='Senior Investment Strategist',
+            goal=f'Analyze {ticker} and provide a Buy/Sell/Hold recommendation.',
+            backstory='Expert in Indian markets, specialized in technical levels and news sentiment.',
+            tools=[search_tool],
+            llm=llm
+        )
+
+        # 3. Dynamic Task Logic
+        holding_context = f"The user bought this at {buy_price}. Current price is {curr_price}." if is_holding else "User is looking to enter a new position."
+        
+        analysis_task = Task(
+            description=f'''
+            1. Analyze {ticker} with current price {curr_price}, 52W High {high_52}, and 52W Low {low_52}.
+            2. Search for latest Indian/Global news affecting this specific asset.
+            3. Context: {holding_context}
+            4. Provide a recommendation: 
+               - If NOT holding: Suggest 'Buy', 'Wait', or 'Avoid'.
+               - If holding: Suggest 'Hold' or 'Sell' (Profit Booking/Stop Loss).
+            ''',
+            expected_output='A clear report with data, news summary, and a definitive recommendation.',
+            agent=advisor
+        )
+
+        crew = Crew(agents=[advisor], tasks=[analysis_task])
+        
+        with st.spinner("Agent is crunching numbers and reading news..."):
+            result = crew.kickoff()
+            st.success("Analysis Complete!")
+            st.markdown(result.raw)
+
+            # Clean display of stats
+            col1, col2, col3 = st.columns(3)
+            col1.metric("Current Price", f"₹{curr_price}")
+            col2.metric("52W High", f"₹{high_52}")
+            col3.metric("52W Low", f"₹{low_52}")
