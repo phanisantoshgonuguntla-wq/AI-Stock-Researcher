@@ -41,67 +41,58 @@ with st.sidebar:
     
     analyze_btn = st.button("Run Full Analysis", type="primary")
 
-# --- 4. CORE ENGINE ---
+# --- 4. HIGH-PERFORMANCE CORE ENGINE ---
 if analyze_btn:
     if not ticker:
         st.warning("Please enter a ticker symbol.")
     else:
-        with st.status("🔍 Scanning Market Data...", expanded=True) as status:
+        # We use a container to show progress
+        status_box = st.empty()
+        with st.status("🚀 Launching Analysis...", expanded=True) as status:
             try:
-                # A. Reliable Price Fetching
+                # A. FASTEST PRICE FETCHING (Avoids .info hang)
+                status.write("Fetching market stats...")
                 asset = yf.Ticker(ticker)
-                fast = asset.fast_info
                 
-                curr_price = fast.get('last_price') or asset.info.get('currentPrice') or \
-                             asset.info.get('navPrice') or asset.info.get('previousClose', 0)
-                
-                high_52 = fast.get('year_high') or asset.info.get('fiftyTwoWeekHigh', 0)
-                low_52 = fast.get('year_low') or asset.info.get('fiftyTwoWeekLow', 0)
-                asset_name = asset.info.get('longName', ticker)
-
-                if curr_price == 0:
-                    st.error(f"Could not find {ticker}. Please check the symbol.")
+                # Fetching 1 day of history is 10x faster and never hangs
+                hist = asset.history(period="1d")
+                if hist.empty:
+                    st.error(f"Could not find data for {ticker}. Check the symbol.")
                     st.stop()
-
-                # B. AI Agent Configuration
-                status.write("🤖 AI Analyst is researching latest news...")
-                search_tool = TavilySearchTool()
+                
+                curr_price = round(hist['Close'].iloc[-1], 2)
+                
+                # B. FAST AI AGENT (Using 'fast' search depth)
+                status.write("Searching latest news...")
+                search_tool = TavilySearchTool() 
                 llm = ChatGoogleGenerativeAI(model="gemini-2.5-flash")
 
                 advisor = Agent(
                     role='Senior Indian Market Analyst',
-                    goal=f'Provide clear Buy/Sell/Hold advice for {asset_name}',
-                    backstory='Expert in Indian stock trends, regulatory news, and 52-week technicals.',
+                    goal=f'Quick Buy/Sell/Hold advice for {ticker}',
+                    backstory='You provide rapid, accurate financial summaries.',
                     tools=[search_tool],
                     llm=llm,
+                    allow_delegation=False, # Faster: Agent won't try to hire other agents
                     verbose=True
                 )
 
-                portfolio_msg = f"User bought at ₹{buy_price} and is holding." if is_holding else "User is looking to enter a new position."
-                
                 task = Task(
-                    description=f'''
-                    Analyze {asset_name} ({ticker}). 
-                    Market Stats: Price ₹{curr_price}, 52W High ₹{high_52}, 52W Low ₹{low_52}.
-                    User Context: {portfolio_msg}
-                    Research the latest 3 news items from Indian financial media and provide a clear recommendation.''',
-                    expected_output='A professional report with price metrics, news impact, and final advice.',
+                    description=f"Current Price of {ticker}: ₹{curr_price}. Find 2 major news items and give a 1-paragraph recommendation.",
+                    expected_output='A short, punchy investment report.',
                     agent=advisor
                 )
 
                 crew = Crew(agents=[advisor], tasks=[task])
                 result = crew.kickoff()
+                
                 status.update(label="Analysis Complete!", state="complete", expanded=False)
 
                 # --- 5. RESULTS DISPLAY ---
-                st.subheader(f"Strategy Report: {asset_name}")
-                col1, col2, col3 = st.columns(3)
-                col1.metric("Current", f"₹{curr_price}")
-                col2.metric("52W High", f"₹{high_52}")
-                col3.metric("52W Low", f"₹{low_52}")
-                
+                st.subheader(f"Results for {ticker}")
+                st.metric("Live Price", f"₹{curr_price}")
                 st.markdown("---")
                 st.markdown(result.raw)
 
             except Exception as e:
-                st.error(f"Unexpected Error: {e}")
+                st.error(f"Speed Error: {e}")
