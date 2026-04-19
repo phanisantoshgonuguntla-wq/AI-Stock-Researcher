@@ -40,7 +40,7 @@ def get_best_model() -> str:
 MODEL = get_best_model()
 
 
-# ── TICKER RESOLVER (Gemini-powered) ─────────────────────────────────────────
+# ── TICKER RESOLVER ───────────────────────────────────────────────────────────
 def resolve_ticker(company_name: str, exchange: str = "NSE") -> str | None:
     suffix = ".NS" if exchange == "NSE" else ".BO"
 
@@ -75,30 +75,35 @@ Your answer (ticker symbol only):"""
                 temperature=0.1,
             ),
         )
-        result = response.text.strip().upper()
 
-        # Clean up
+        # ── DEBUG ─────────────────────────────────────────────────────────────
+        raw_response = response.text
+        st.info(f"DEBUG 1 — Raw Gemini response: `{repr(raw_response)}`")
+
+        result = raw_response.strip().upper()
         result = result.split("\n")[0].strip()
         result = result.replace("'", "").replace('"', "")
         while ".." in result:
             result = result.replace("..", ".")
         result = result.rstrip(".,;:")
 
+        st.info(f"DEBUG 2 — After cleanup: `{repr(result)}`")
+
         if not result or result == "UNKNOWN":
             return None
 
-        # Ensure suffix is present
         if not (result.endswith(".NS") or result.endswith(".BO")):
             result = result.split()[0] + suffix
 
+        st.info(f"DEBUG 3 — Final ticker: `{repr(result)}`")
         return result
 
     except Exception as e:
-        st.warning(f"Ticker lookup error: {e}")
+        st.error(f"DEBUG — Ticker lookup FULL error: {repr(e)}")
         return None
 
 
-# ── STOCK DATA (yfinance) ─────────────────────────────────────────────────────
+# ── STOCK DATA ────────────────────────────────────────────────────────────────
 def fetch_stock_data(ticker: str) -> dict | None:
     try:
         asset = yf.Ticker(ticker)
@@ -135,7 +140,7 @@ def fetch_stock_data(ticker: str) -> dict | None:
         return None
 
 
-# ── NEWS (RSS feeds — free, no API key) ───────────────────────────────────────
+# ── NEWS ──────────────────────────────────────────────────────────────────────
 RSS_SOURCES = {
     "Moneycontrol":   "https://www.moneycontrol.com/rss/latestnews.xml",
     "Economic Times": "https://economictimes.indiatimes.com/markets/stocks/rss.cms",
@@ -269,7 +274,7 @@ with st.sidebar:
         "Tip: If lookup fails, paste the ticker directly "
         "e.g. `WIPRO.NS` or `507685.BO`."
     )
-    st.caption(f"Model in use: `{MODEL}`")   # ← shows which model was auto-selected
+    st.caption(f"Model in use: `{MODEL}`")
 
 
 # ── PAGE HEADER ───────────────────────────────────────────────────────────────
