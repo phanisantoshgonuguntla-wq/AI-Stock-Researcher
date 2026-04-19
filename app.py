@@ -13,7 +13,7 @@ except Exception:
     st.error("🔑 Add GOOGLE_API_KEY to Streamlit Secrets (Settings → Secrets).")
     st.stop()
 
-MODEL = "gemini-2.5-flash-preview-04-17"
+MODEL = "gemini-2.5-flash-preview-05-20"
 
 # ── TICKER RESOLVER (Gemini-powered, no hardcoded maps) ───────────────────────
 def resolve_ticker(company_name: str, exchange: str = "NSE") -> str | None:
@@ -31,7 +31,9 @@ Examples:
 - "HDFC Bank" on NSE → HDFCBANK.NS
 - "Tata Motors" on BSE → 500570.BO
 - "Infosys" on NSE → INFY.NS
+- "Wipro" on NSE → WIPRO.NS
 - "Zomato" on NSE → ZOMATO.NS
+- "ITC" on NSE → ITC.NS
 
 If you cannot determine the ticker with confidence, return exactly: UNKNOWN
 
@@ -42,17 +44,30 @@ Your answer (ticker symbol only):"""
         response = model.generate_content(
             prompt,
             generation_config=genai.GenerationConfig(
-                max_output_tokens=20,  # a ticker is never longer than this
-                temperature=0.0,       # deterministic — no creativity needed here
+                max_output_tokens=50,  # gives model breathing room
+                temperature=0.1,       # slight flexibility fixes refusal on simple names
             ),
         )
         result = response.text.strip().upper()
 
-        if result == "UNKNOWN" or not result:
+        # Clean up — Gemini sometimes adds punctuation, quotes, or newlines
+        result = result.split("\n")[0].strip()
+        result = result.replace("'", "").replace('"', "")
+
+        # Remove any duplicate dots (e.g. WIPRO..NS → WIPRO.NS)
+        while ".." in result:
+            result = result.replace("..", ".")
+
+        # Strip trailing punctuation
+        result = result.rstrip(".,;:")
+
+        if not result or result == "UNKNOWN":
             return None
-        # If Gemini forgot the suffix, add it
+
+        # Ensure correct suffix is present
         if not (result.endswith(".NS") or result.endswith(".BO")):
             result = result.split()[0] + suffix
+
         return result
 
     except Exception as e:
@@ -99,15 +114,14 @@ def fetch_stock_data(ticker: str) -> dict | None:
 
 # ── NEWS (RSS feeds — free, no API key) ───────────────────────────────────────
 RSS_SOURCES = {
-    "Moneycontrol":    "https://www.moneycontrol.com/rss/latestnews.xml",
-    "Economic Times":  "https://economictimes.indiatimes.com/markets/stocks/rss.cms",
-    "ET Markets":      "https://economictimes.indiatimes.com/markets/rss.cms",
-    "Business Std":    "https://www.business-standard.com/rss/markets-106.rss",
+    "Moneycontrol":   "https://www.moneycontrol.com/rss/latestnews.xml",
+    "Economic Times": "https://economictimes.indiatimes.com/markets/stocks/rss.cms",
+    "ET Markets":     "https://economictimes.indiatimes.com/markets/rss.cms",
+    "Business Std":   "https://www.business-standard.com/rss/markets-106.rss",
 }
 
 def fetch_news(company_name: str, max_per_source: int = 3) -> list[dict]:
-    results     = []
-    # Only use words longer than 3 chars as search terms (skip "of", "the", "and" etc.)
+    results      = []
     search_terms = [w.lower() for w in company_name.split() if len(w) > 3]
 
     for source_name, url in RSS_SOURCES.items():
@@ -193,7 +207,8 @@ Structure your response EXACTLY like this (use these bold headers):
 **Suggested action**
 One sentence: what to do and at what price level to watch.
 
-Keep it under 250 words. Use simple language. Be specific with rupee values. Do not add generic disclaimers.
+Keep it under 250 words. Use simple language. Be specific with rupee values.
+Do not add generic disclaimers.
 """
 
     try:
@@ -209,11 +224,11 @@ with st.sidebar:
     st.header("🔍 Analyse a Stock")
 
     exchange = st.radio("Exchange", ["NSE", "BSE"], horizontal=True)
-    st.caption("NSE is recommended — better data quality on yfinance.")
+    st.caption("NSE recommended — better data quality on yfinance.")
 
     user_input = st.text_input(
         "Company Name or Ticker",
-        placeholder="e.g. HDFC Bank, Zomato, RELIANCE.NS, 532540.BO",
+        placeholder="e.g. Wipro, HDFC Bank, RELIANCE.NS, 500570.BO",
     )
 
     st.divider()
@@ -226,15 +241,17 @@ with st.sidebar:
 
     st.divider()
     st.caption(
-        "News from Moneycontrol, Economic Times & Business Standard RSS — free, no API key.\n\n"
-        "Tip: If lookup fails, paste the ticker directly e.g. `HDFCBANK.NS` or `500180.BO`."
+        "News from Moneycontrol, Economic Times & "
+        "Business Standard RSS — free, no API key.\n\n"
+        "Tip: If lookup fails, paste the ticker directly "
+        "e.g. `WIPRO.NS` or `507685.BO`."
     )
 
 
 # ── PAGE HEADER ───────────────────────────────────────────────────────────────
 st.title("📈 AI Stock Advisor — India")
 st.caption(
-    f"Powered by {MODEL} + yfinance + MC/ET/BS RSS feeds.  "
+    f"Powered by {MODEL} + yfinance + MC / ET / BS RSS feeds.  "
     "For educational use only — not SEBI-registered advice."
 )
 
@@ -245,13 +262,17 @@ if analyze_btn:
         st.warning("Please enter a company name or ticker.")
         st.stop()
 
-    # ── Step 1: Resolve ticker ────────────────────────────────────────────────
     raw = user_input.strip()
 
-    if raw.upper().endswith((".NS", ".BO")) or raw.isdigit():
-        # User typed a ticker/BSE code directly — no lookup needed
-        ticker = raw.upper() if not raw.isdigit() else f"{raw}.BO"
+    # ── Step 1: Resolve ticker ────────────────────────────────────────────────
+    if raw.upper().endswith((".NS", ".BO")):
+        # User typed a full ticker directly — skip Gemini lookup
+        ticker = raw.upper()
         st.info(f"Using ticker directly: `{ticker}`")
+    elif raw.strip().isdigit():
+        # User typed a raw BSE code like 532540
+        ticker = f"{raw.strip()}.BO"
+        st.info(f"Using BSE code directly: `{ticker}`")
     else:
         with st.spinner(f"Looking up {exchange} ticker for '{raw}'..."):
             ticker = resolve_ticker(raw, exchange)
@@ -259,12 +280,13 @@ if analyze_btn:
         if not ticker:
             st.error(f"Could not find a {exchange} ticker for **{raw}**.")
             st.info(
-                "Try being more specific (e.g. 'Tata Consultancy Services' not 'TCS'), "
-                "or paste the ticker directly (e.g. `TCS.NS` or `532540.BO`)."
+                "Try being more specific (e.g. 'Tata Consultancy Services' "
+                "instead of 'TCS'), or paste the ticker directly "
+                "(e.g. `TCS.NS` or `532540.BO`)."
             )
             st.stop()
 
-    # ── Step 2: Fetch price data ──────────────────────────────────────────────
+    # ── Step 2: Fetch price + news + analysis ────────────────────────────────
     with st.status("Fetching data...", expanded=True) as status:
 
         status.write(f"📊 Getting live price for `{ticker}` from yfinance...")
@@ -277,28 +299,28 @@ if analyze_btn:
             )
             st.stop()
 
-        # ── Step 3: Fetch news ────────────────────────────────────────────────
         status.write("📰 Scanning Moneycontrol, ET, Business Standard RSS feeds...")
         news_items = fetch_news(raw)
         status.write(f"   → {len(news_items)} relevant headline(s) found")
 
-        # ── Step 4: Gemini analysis ───────────────────────────────────────────
-        status.write(f"🤖 Sending to {MODEL} for analysis...")
+        status.write(f"🤖 Sending everything to {MODEL} for analysis...")
         analysis = get_gemini_analysis(raw, data, news_items, buy_price)
 
         status.update(label="Analysis complete!", state="complete", expanded=False)
 
-    # ── OUTPUT ────────────────────────────────────────────────────────────────
+    # ── METRICS ───────────────────────────────────────────────────────────────
     st.subheader(f"📌 {raw.title()}  ({ticker})")
 
     c1, c2, c3, c4 = st.columns(4)
-    c1.metric("Price",     f"₹{data['price']}",   f"₹{data['change']} ({data['change_pct']}%)")
+    c1.metric("Price",     f"₹{data['price']}",
+              f"₹{data['change']} ({data['change_pct']}%)")
     c2.metric("52W High",  f"₹{data['high_52w']}")
     c3.metric("52W Low",   f"₹{data['low_52w']}")
     c4.metric("SMA 20/50", f"₹{data['sma20']}",
               delta=f"50d ₹{data['sma50']}" if data["sma50"] else "50d N/A",
               delta_color="off")
 
+    # ── P&L FOR HOLDERS ───────────────────────────────────────────────────────
     if buy_price > 0:
         pl     = round(data["price"] - buy_price, 2)
         pl_pct = round((pl / buy_price) * 100, 2)
@@ -307,9 +329,11 @@ if analyze_btn:
         p1.metric("Buy Price",      f"₹{buy_price:.2f}")
         p2.metric("Unrealised P&L", f"₹{pl:+.2f}", f"{pl_pct:+.2f}%")
 
+    # ── CHART ─────────────────────────────────────────────────────────────────
     st.subheader("3-Month Price Chart")
     st.line_chart(data["hist"][["Close"]].rename(columns={"Close": "Price (₹)"}))
 
+    # ── NEWS ──────────────────────────────────────────────────────────────────
     st.subheader(f"📰 Recent Headlines ({len(news_items)} found)")
     if news_items:
         for item in news_items:
@@ -326,6 +350,7 @@ if analyze_btn:
             "AI analysis is based on price data only."
         )
 
+    # ── AI ANALYSIS ───────────────────────────────────────────────────────────
     st.subheader("🤖 AI Analysis")
     st.markdown(analysis)
 
