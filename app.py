@@ -32,11 +32,11 @@ if "auto_name"       not in st.session_state:
 # ── AUTO-DETECT BEST MODEL ────────────────────────────────────────────────────
 def get_best_model() -> str:
     preferred = [
+        "gemini-2.5-flash-lite",
+        "gemini-2.5-flash-lite-preview-06-17",
         "gemini-2.5-flash",
         "gemini-2.5-flash-preview-05-20",
-        "gemini-2.5-flash-preview-04-17",
         "gemini-2.0-flash",
-        "gemini-2.0-flash-001",
         "gemini-1.5-flash",
     ]
     try:
