@@ -1,7 +1,7 @@
 streamlit
 yfinance>=0.2.50
-setuptools<82.0.0
-crewai>=0.100.0
-crewai-tools>=0.100.0
+setuptools==80.9.0
+crewai>=1.0.0
+crewai-tools>=1.0.0
 langchain-google-genai
 tiktoken
