@@ -1,5 +1,6 @@
 streamlit
 yfinance>=0.2.50
+setuptools
 crewai==0.28.8
 crewai-tools==0.1.6
 langchain-google-genai
