@@ -25,74 +25,74 @@ except Exception:
     st.error("🔑 API Keys Missing! Add them to Streamlit Settings -> Secrets.")
     st.stop()
 
-# --- 3. UI SETUP ---
-st.title("🇮🇳 Indian Stock & Portfolio Advisor")
-st.markdown("Advanced AI analysis for **NSE**, **BSE**, and **Mutual Funds**.")
-
+# --- 3. SMART UI SETUP (REPLACE YOUR OLD STEP 3) ---
 with st.sidebar:
-    st.header("Stock Selection")
-    ticker = st.text_input("Symbol", placeholder="e.g. HDFCBANK.NS or 500180.BO")
-    st.caption("Use .NS for NSE and .BO for BSE.")
+    st.header("Search by Name")
+    # This now accepts "Tata Motors" or "Reliance" instead of tickers
+    user_input = st.text_input("Enter Company Name", placeholder="e.g. HDFC Bank, Infosys")
     
     is_holding = st.checkbox("I am holding this stock")
     buy_price = 0.0
     if is_holding:
-        buy_price = st.number_input("Purchase Price (₹)", min_value=0.0, step=1.0)
+        buy_price = st.number_input("Purchase Price (₹)", min_value=0.0)
     
-    analyze_btn = st.button("Run Full Analysis", type="primary")
+    analyze_btn = st.button("Run AI Analysis", type="primary")
 
-# --- 4. HIGH-PERFORMANCE CORE ENGINE ---
+# --- 4. SMART SEARCH ENGINE (REPLACE YOUR OLD STEP 4) ---
 if analyze_btn:
-    if not ticker:
-        st.warning("Please enter a ticker symbol.")
+    if not user_input:
+        st.warning("Please enter a company name.")
     else:
-        # We use a container to show progress
-        status_box = st.empty()
-        with st.status("🚀 Launching Analysis...", expanded=True) as status:
+        with st.status("🔍 Converting Name to Ticker...", expanded=True) as status:
             try:
-                # A. FASTEST PRICE FETCHING (Avoids .info hang)
-                status.write("Fetching market stats...")
-                asset = yf.Ticker(ticker)
-                
-                # Fetching 1 day of history is 10x faster and never hangs
-                hist = asset.history(period="1d")
-                if hist.empty:
-                    st.error(f"Could not find data for {ticker}. Check the symbol.")
-                    st.stop()
-                
-                curr_price = round(hist['Close'].iloc[-1], 2)
-                
-                # B. FAST AI AGENT (Using 'fast' search depth)
-                status.write("Searching latest news...")
-                search_tool = TavilySearchTool() 
+                # Part A: The Translator (Agent finds the Ticker)
                 llm = ChatGoogleGenerativeAI(model="gemini-2.5-flash")
+                search_tool = TavilySearchTool()
 
-                advisor = Agent(
-                    role='Senior Indian Market Analyst',
-                    goal=f'Quick Buy/Sell/Hold advice for {ticker}',
-                    backstory='You provide rapid, accurate financial summaries.',
+                finder = Agent(
+                    role='Stock Symbol Finder',
+                    goal=f'Find the NSE ticker for {user_input}',
+                    backstory='You are a database of NSE/BSE symbols. You only return the symbol.',
                     tools=[search_tool],
-                    llm=llm,
-                    allow_delegation=False, # Faster: Agent won't try to hire other agents
-                    verbose=True
+                    llm=llm
+                )
+                
+                find_task = Task(
+                    description=f"Find the official NSE symbol for {user_input}. Example: 'Reliance' -> 'RELIANCE.NS'.",
+                    expected_output='Just the symbol string.',
+                    agent=finder
+                )
+                
+                ticker = str(Crew(agents=[finder], tasks=[find_task]).kickoff()).strip()
+                status.write(f"Using Ticker: **{ticker}**")
+
+                # Part B: Price & Analysis
+                asset = yf.Ticker(ticker)
+                hist = asset.history(period="1mo")
+                curr_price = round(hist['Close'].iloc[-1], 2)
+
+                status.write("Consulting Moneycontrol & Economic Times...")
+                advisor = Agent(
+                    role='Moneycontrol Analyst',
+                    goal=f'Analyze {user_input} ({ticker})',
+                    backstory='Expert in Indian markets.',
+                    tools=[search_tool],
+                    llm=llm
                 )
 
                 task = Task(
-                    description=f"Current Price of {ticker}: ₹{curr_price}. Find 2 major news items and give a 1-paragraph recommendation.",
-                    expected_output='A short, punchy investment report.',
+                    description=f"Analyze {user_input} at ₹{curr_price}. Check Moneycontrol for news.",
+                    expected_output='A professional Buy/Sell/Hold report.',
                     agent=advisor
                 )
 
-                crew = Crew(agents=[advisor], tasks=[task])
-                result = crew.kickoff()
-                
-                status.update(label="Analysis Complete!", state="complete", expanded=False)
+                result = Crew(agents=[advisor], tasks=[task]).kickoff()
+                status.update(label="Analysis Done!", state="complete", expanded=False)
 
-                # --- 5. RESULTS DISPLAY ---
-                st.subheader(f"Results for {ticker}")
-                st.metric("Live Price", f"₹{curr_price}")
-                st.markdown("---")
+                # --- 5. THE OUTPUT ---
+                st.subheader(f"Strategy Report: {user_input}")
+                st.metric("Live Price", f"₹{curr_price} ({ticker})")
                 st.markdown(result.raw)
 
             except Exception as e:
-                st.error(f"Speed Error: {e}")
+                st.error("Make sure to use a clear company name (e.g. 'Tata Motors' instead of just 'Tata').")
