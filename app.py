@@ -2,6 +2,10 @@ import streamlit as st
 import yfinance as yf
 import google.generativeai as genai
 import feedparser
+import smtplib
+import re
+from email.mime.text import MIMEText
+from email.mime.multipart import MIMEMultipart
 from datetime import datetime
 
 # ── CONFIG ────────────────────────────────────────────────────────────────────
@@ -10,11 +14,16 @@ st.set_page_config(page_title="AI Stock Advisor (India)", layout="wide", page_ic
 try:
     genai.configure(api_key=st.secrets["GOOGLE_API_KEY"])
 except Exception:
-    st.error("🔑 Add GOOGLE_API_KEY to Streamlit Secrets (Settings → Secrets).")
+    st.error("🔑 Add GOOGLE_API_KEY to Streamlit Secrets.")
     st.stop()
 
 
-# ── AUTO-DETECT BEST AVAILABLE MODEL ─────────────────────────────────────────
+# ── SESSION STATE INIT ────────────────────────────────────────────────────────
+if "wishlist" not in st.session_state:
+    st.session_state.wishlist = []
+
+
+# ── AUTO-DETECT BEST MODEL ────────────────────────────────────────────────────
 def get_best_model() -> str:
     preferred = [
         "gemini-2.5-flash",
@@ -40,100 +49,68 @@ def get_best_model() -> str:
 MODEL = get_best_model()
 
 
-# ── TICKER RESOLVER ───────────────────────────────────────────────────────────
+# ── HELPERS ───────────────────────────────────────────────────────────────────
+def strip_html(text: str) -> str:
+    """Remove all HTML tags and decode common entities."""
+    text = re.sub(r"<[^>]+>", "", text)
+    text = text.replace("&amp;", "&").replace("&lt;", "<").replace(
+        "&gt;", ">").replace("&nbsp;", " ").replace("&quot;", '"')
+    return text.strip()
+
+
 def clean_ticker(raw: str, suffix: str) -> str | None:
-    """Clean and validate a raw ticker string returned by Gemini."""
     result = raw.strip().upper()
-    result = result.split("\n")[0].strip()       # first line only
-    result = result.replace("'", "").replace('"', "")
-    result = result.replace(" ", "")             # remove any spaces
+    result = result.split("\n")[0].strip()
+    result = result.replace("'", "").replace('"', "").replace(" ", "")
     while ".." in result:
         result = result.replace("..", ".")
     result = result.rstrip(".,;:")
-
     if not result or result == "UNKNOWN":
         return None
-
-    # Must be at least 2 characters before the suffix
     base = result.replace(".NS", "").replace(".BO", "")
     if len(base) < 2:
         return None
-
-    # Add suffix if missing
     if not (result.endswith(".NS") or result.endswith(".BO")):
         result = result.split()[0] + suffix
-
     return result
 
 
+# ── TICKER RESOLVER ───────────────────────────────────────────────────────────
 def resolve_ticker(company_name: str, exchange: str = "NSE") -> str | None:
     suffix = ".NS" if exchange == "NSE" else ".BO"
-
     prompt = f"""You are a stock ticker database for Indian stock markets.
-
 Task: Find the exact NSE/BSE ticker symbol for the company below.
-
 Company: {company_name}
 Exchange: {exchange}
 Required suffix: {suffix}
-
 Rules:
 - Reply with ONLY the complete ticker symbol including the suffix
 - Do not truncate or shorten the ticker
 - Do not add any explanation or extra text
-
-Correct examples of complete ticker symbols:
-WIPRO.NS
-RELIANCE.NS
-HDFCBANK.NS
-TCS.NS
-INFY.NS
-SBIN.NS
-ZOMATO.NS
-TATAMOTORS.NS
-BAJFINANCE.NS
-ICICIBANK.NS
-500570.BO
-532540.BO
-
-If truly unknown, reply: UNKNOWN
-
+Examples: WIPRO.NS RELIANCE.NS HDFCBANK.NS TCS.NS INFY.NS SBIN.NS ZOMATO.NS
+If truly unknown reply: UNKNOWN
 Complete ticker symbol for {company_name}:"""
-
     try:
         model = genai.GenerativeModel(MODEL)
-
-        # ── First attempt ─────────────────────────────────────────────────────
         response = model.generate_content(
             prompt,
             generation_config=genai.GenerationConfig(
-                max_output_tokens=200,   # raised significantly — prevents truncation
+                max_output_tokens=200,
                 temperature=0.0,
             ),
         )
         result = clean_ticker(response.text, suffix)
-
-        # ── Validate: if result looks truncated, retry with explicit length hint
         if result:
             base = result.replace(".NS", "").replace(".BO", "")
             if len(base) < 3:
-                # Looks truncated — retry with stronger instruction
-                retry_prompt = f"""The NSE ticker symbol for {company_name} is a string of letters followed by .NS
-Write the FULL ticker symbol without cutting it short.
-For example Wipro's full ticker is WIPRO.NS not WIP.NS
-Write the complete ticker for {company_name} on {exchange}:"""
-
-                retry_response = model.generate_content(
-                    retry_prompt,
+                retry = model.generate_content(
+                    f"Write the FULL NSE ticker for {company_name} ending in {suffix}. "
+                    f"Example: Wipro = WIPRO.NS. Just the ticker:",
                     generation_config=genai.GenerationConfig(
-                        max_output_tokens=200,
-                        temperature=0.0,
-                    ),
+                        max_output_tokens=200, temperature=0.0),
                 )
-                result = clean_ticker(retry_response.text, suffix)
-
+                result = clean_ticker(retry.text, suffix)
         return result
-
     except Exception as e:
         st.warning(f"Ticker lookup error: {e}")
         return None
@@ -146,7 +123,6 @@ def fetch_stock_data(ticker: str) -> dict | None:
         hist  = asset.history(period="3mo")
         if hist.empty:
             return None
-
         curr     = round(float(hist["Close"].iloc[-1]), 2)
         prev     = round(float(hist["Close"].iloc[-2]), 2)
         high_52w = round(float(hist["High"].max()), 2)
@@ -157,26 +133,56 @@ def fetch_stock_data(ticker: str) -> dict | None:
         change_pct = round((change / prev) * 100, 2)
         avg_vol    = int(hist["Volume"].tail(20).mean())
         last_vol   = int(hist["Volume"].iloc[-1])
-
         return {
-            "ticker":     ticker,
-            "price":      curr,
-            "change":     change,
-            "change_pct": change_pct,
-            "high_52w":   high_52w,
-            "low_52w":    low_52w,
-            "sma20":      sma20,
-            "sma50":      sma50,
-            "avg_vol":    avg_vol,
-            "last_vol":   last_vol,
-            "hist":       hist,
+            "ticker": ticker, "price": curr, "change": change,
+            "change_pct": change_pct, "high_52w": high_52w,
+            "low_52w": low_52w, "sma20": sma20, "sma50": sma50,
+            "avg_vol": avg_vol, "last_vol": last_vol, "hist": hist,
         }
     except Exception as e:
         st.error(f"Price fetch error: {e}")
         return None
 
 
-# ── NEWS ──────────────────────────────────────────────────────────────────────
+# ── TOP GAINERS / LOSERS (Nifty 50) ──────────────────────────────────────────
+NIFTY50 = [
+    "RELIANCE.NS","TCS.NS","HDFCBANK.NS","INFY.NS","ICICIBANK.NS",
+    "HINDUNILVR.NS","ITC.NS","SBIN.NS","BHARTIARTL.NS","KOTAKBANK.NS",
+    "LT.NS","AXISBANK.NS","ASIANPAINT.NS","MARUTI.NS","HCLTECH.NS",
+    "WIPRO.NS","SUNPHARMA.NS","TITAN.NS","BAJFINANCE.NS","NESTLEIND.NS",
+    "ULTRACEMCO.NS","TECHM.NS","POWERGRID.NS","NTPC.NS","ONGC.NS",
+    "TATAMOTORS.NS","TATASTEEL.NS","JSWSTEEL.NS","ADANIENT.NS","ADANIPORTS.NS",
+    "COALINDIA.NS","BAJAJ-AUTO.NS","HEROMOTOCO.NS","EICHERMOT.NS","DIVISLAB.NS",
+    "DRREDDY.NS","CIPLA.NS","APOLLOHOSP.NS","SBILIFE.NS","HDFCLIFE.NS",
+    "HINDALCO.NS","VEDL.NS","BPCL.NS","IOC.NS","GRASIM.NS",
+    "TATACONSUM.NS","PIDILITIND.NS","DMART.NS","BRITANNIA.NS","SHREECEM.NS",
+]
+
+@st.cache_data(ttl=900)  # cache for 15 minutes
+def fetch_movers():
+    """Fetch day change % for all Nifty 50 stocks and return top/bottom 5."""
+    results = []
+    for ticker in NIFTY50:
+        try:
+            hist = yf.Ticker(ticker).history(period="2d")
+            if len(hist) >= 2:
+                curr  = float(hist["Close"].iloc[-1])
+                prev  = float(hist["Close"].iloc[-2])
+                chg   = round(((curr - prev) / prev) * 100, 2)
+                name  = ticker.replace(".NS", "")
+                results.append({
+                    "ticker": ticker,
+                    "name":   name,
+                    "price":  round(curr, 2),
+                    "change": chg,
+                })
+        except Exception:
+            continue
+    results.sort(key=lambda x: x["change"], reverse=True)
+    return results[:5], results[-5:][::-1]  # top 5 gainers, top 5 losers
+
+
+# ── NEWS (RSS — fixed) ────────────────────────────────────────────────────────
 RSS_SOURCES = {
     "Moneycontrol":   "https://www.moneycontrol.com/rss/latestnews.xml",
     "Economic Times": "https://economictimes.indiatimes.com/markets/stocks/rss.cms",
@@ -185,12 +191,15 @@ RSS_SOURCES = {
 }
 
 def fetch_news(company_name: str, max_per_source: int = 3) -> list[dict]:
-    results      = []
-    search_terms = [w.lower() for w in company_name.split() if len(w) > 3]
-
-    # If the entire name is short (e.g. "SBI", "ITC"), use it as-is
-    if not search_terms:
-        search_terms = [company_name.lower()]
+    """
+    Strict phrase matching — all words of the company name must appear
+    together or the headline is skipped.
+    """
+    results = []
+    # Build search terms: full name + individual long words
+    name_lower   = company_name.lower()
+    words        = [w for w in name_lower.split() if len(w) > 3]
+    search_terms = list({name_lower} | set(words)) if words else [name_lower]
 
     for source_name, url in RSS_SOURCES.items():
         try:
@@ -199,86 +208,57 @@ def fetch_news(company_name: str, max_per_source: int = 3) -> list[dict]:
             for entry in feed.entries:
                 if count >= max_per_source:
                     break
-                title   = entry.get("title", "")
-                summary = entry.get("summary", entry.get("description", ""))
+                title   = strip_html(entry.get("title", ""))
+                summary = strip_html(entry.get("summary", entry.get("description", "")))
                 text    = (title + " " + summary).lower()
-                if any(term in text for term in search_terms):
+
+                # Strict: the full company name OR every individual long word
+                # must appear in the article — prevents loosely related results
+                full_match = name_lower in text
+                word_match = words and all(w in text for w in words)
+
+                if full_match or word_match:
                     results.append({
                         "source":    source_name,
                         "title":     title,
-                        "summary":   summary[:300] if summary else "",
+                        "summary":   summary[:300],
                         "link":      entry.get("link", ""),
                         "published": entry.get("published", ""),
                     })
                     count += 1
         except Exception:
             continue
-
     return results
 
 
-# ── GEMINI ANALYSIS ───────────────────────────────────────────────────────────
-def get_gemini_analysis(
-    company: str,
-    data: dict,
-    news_items: list[dict],
-    buy_price: float = 0.0,
+# ── MUTUAL FUND ADVISOR ───────────────────────────────────────────────────────
+def get_mf_recommendations(
+    inv_type: str,
+    tenure_years: int,
+    risk: str,
+    amount: float,
 ) -> str:
+    prompt = f"""You are a SEBI-registered mutual fund advisor for Indian investors.
 
-    news_block = (
-        "\n".join(
-            f"- [{item['source']}] {item['title']}"
-            + (f": {item['summary'][:150]}" if item["summary"] else "")
-            for item in news_items
-        )
-        if news_items
-        else "No recent news found for this company in today's feeds."
-    )
+Investment details:
+- Type       : {inv_type}  (SIP or Lump Sum)
+- Amount     : ₹{amount:,.0f} {'per month' if inv_type == 'SIP' else 'one-time'}
+- Tenure     : {tenure_years} years
+- Risk level : {risk}
 
-    holding_text = ""
-    if buy_price > 0:
-        pl     = round(data["price"] - buy_price, 2)
-        pl_pct = round((pl / buy_price) * 100, 2)
-        holding_text = f"""
-The investor HOLDS this stock — bought at ₹{buy_price:.2f}.
-Current P&L: ₹{pl:+.2f} ({pl_pct:+.2f}%)
-Include a specific HOLD / BOOK PROFIT / AVERAGE DOWN call for them.
+Task: Recommend exactly 10 real Indian mutual funds available on Zerodha Coin / Groww.
+
+For each fund provide:
+1. Fund name (full official name)
+2. Category (e.g. Large Cap, ELSS, Debt, Hybrid)
+3. Why it suits this investor's profile and tenure
+4. Approximate historical 3Y/5Y CAGR (use realistic published figures)
+5. Minimum SIP / lump sum amount
+
+Format as a numbered list. Be specific — use real fund names like
+"Mirae Asset Large Cap Fund", "Parag Parikh Flexi Cap Fund", etc.
+End with a 2-line summary of the overall strategy for this investor.
 """
-
-    prompt = f"""You are a seasoned Indian equity analyst writing for a retail investor.
-Analyse the data below and give a clear, actionable recommendation.
-
-=== PRICE & TECHNICAL DATA ===
-Company  : {company} ({data['ticker']})
-Price    : ₹{data['price']}   |  Day change: ₹{data['change']} ({data['change_pct']}%)
-52W High : ₹{data['high_52w']}  |  52W Low: ₹{data['low_52w']}
-SMA 20   : ₹{data['sma20']}    |  SMA 50 : {data['sma50'] or 'N/A'}
-Volume   : Today {data['last_vol']:,}  vs 20-day avg {data['avg_vol']:,}
-{holding_text}
-=== RECENT NEWS (Moneycontrol / Economic Times / Business Standard) ===
-{news_block}
-
-=== INSTRUCTIONS ===
-Structure your response EXACTLY like this (use these bold headers):
-
-**Verdict: BUY / HOLD / SKIP**
-
-**What the price data says**
-- (2–3 bullet points using the numbers above)
-
-**What the news says**
-- (2–3 bullet points referencing the actual headlines above; if no news, say so)
-
-**Key risks**
-- (2 bullet points)
-
-**Suggested action**
-One sentence: what to do and at what price level to watch.
-
-Keep it under 250 words. Use simple language. Be specific with rupee values.
-Do not add generic disclaimers.
-"""
-
     try:
         model    = genai.GenerativeModel(MODEL)
         response = model.generate_content(prompt)
@@ -287,144 +267,379 @@ Do not add generic disclaimers.
         return f"⚠️ Gemini error: {e}"
 
 
+# ── GEMINI STOCK ANALYSIS ─────────────────────────────────────────────────────
+def get_gemini_analysis(
+    company: str, data: dict,
+    news_items: list[dict], buy_price: float = 0.0,
+) -> str:
+    news_block = (
+        "\n".join(
+            f"- [{i['source']}] {i['title']}"
+            + (f": {i['summary'][:150]}" if i["summary"] else "")
+            for i in news_items
+        )
+        if news_items else "No recent news found for this company in today's feeds."
+    )
+    holding_text = ""
+    if buy_price > 0:
+        pl     = round(data["price"] - buy_price, 2)
+        pl_pct = round((pl / buy_price) * 100, 2)
+        holding_text = f"""
+The investor HOLDS this stock — bought at ₹{buy_price:.2f}.
+Current P&L: ₹{pl:+.2f} ({pl_pct:+.2f}%)
+Include a specific HOLD / BOOK PROFIT / AVERAGE DOWN call.
+"""
+    prompt = f"""You are a seasoned Indian equity analyst for a retail investor.
+
+=== PRICE & TECHNICAL DATA ===
+Company  : {company} ({data['ticker']})
+Price    : ₹{data['price']}   |  Day change: ₹{data['change']} ({data['change_pct']}%)
+52W High : ₹{data['high_52w']}  |  52W Low: ₹{data['low_52w']}
+SMA 20   : ₹{data['sma20']}    |  SMA 50 : {data['sma50'] or 'N/A'}
+Volume   : Today {data['last_vol']:,}  vs 20-day avg {data['avg_vol']:,}
+{holding_text}
+=== RECENT NEWS ===
+{news_block}
+
+Structure EXACTLY as:
+**Verdict: BUY / HOLD / SKIP**
+**What the price data says**
+- (2–3 bullets with actual numbers)
+**What the news says**
+- (2–3 bullets referencing headlines above)
+**Key risks**
+- (2 bullets)
+**Suggested action**
+One sentence with price levels to watch.
+
+Under 250 words. Simple language. No generic disclaimers.
+"""
+    try:
+        model    = genai.GenerativeModel(MODEL)
+        response = model.generate_content(prompt)
+        return response.text
+    except Exception as e:
+        return f"⚠️ Gemini error: {e}"
+
+
+# ── EMAIL SENDER ──────────────────────────────────────────────────────────────
+def send_wishlist_email(to_email: str, wishlist: list[dict]) -> bool:
+    try:
+        sender  = st.secrets["EMAIL_ADDRESS"]
+        pw      = st.secrets["EMAIL_APP_PASSWORD"]
+
+        body_lines = ["Your AI Stock Advisor Wishlist\n", "=" * 40]
+        for item in wishlist:
+            body_lines.append(
+                f"\n{item['name']} ({item['ticker']})\n"
+                f"  Price when added : ₹{item['price']}\n"
+                f"  Added on         : {item['added']}"
+            )
+        body_lines.append(
+            "\n\n" + "=" * 40 +
+            "\nThis is an automated email from your AI Stock Advisor.\n"
+            "Not SEBI-registered financial advice."
+        )
+
+        msg                    = MIMEMultipart()
+        msg["From"]            = sender
+        msg["To"]              = to_email
+        msg["Subject"]         = "📋 Your Stock Wishlist — AI Stock Advisor"
+        msg.attach(MIMEText("\n".join(body_lines), "plain"))
+
+        with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
+            server.login(sender, pw)
+            server.sendmail(sender, to_email, msg.as_string())
+        return True
+    except Exception as e:
+        st.error(f"Email error: {e}")
+        return False
+
+
 # ── SIDEBAR ───────────────────────────────────────────────────────────────────
 with st.sidebar:
     st.header("🔍 Analyse a Stock")
-
-    exchange = st.radio("Exchange", ["NSE", "BSE"], horizontal=True)
-    st.caption("NSE recommended — better data quality on yfinance.")
-
+    exchange   = st.radio("Exchange", ["NSE", "BSE"], horizontal=True)
+    st.caption("NSE recommended — better data quality.")
     user_input = st.text_input(
         "Company Name or Ticker",
-        placeholder="e.g. Wipro, HDFC Bank, RELIANCE.NS, 500570.BO",
+        placeholder="e.g. Wipro, HDFC Bank, RELIANCE.NS",
     )
-
     st.divider()
     is_holding = st.checkbox("I already hold this stock")
     buy_price  = 0.0
     if is_holding:
         buy_price = st.number_input("My buy price (₹)", min_value=0.01, step=0.5)
-
     analyze_btn = st.button("Run Analysis ▶", type="primary", use_container_width=True)
-
     st.divider()
     st.caption(
-        "News from Moneycontrol, Economic Times & "
-        "Business Standard RSS — free, no API key.\n\n"
-        "Tip: If lookup fails, paste the ticker directly "
-        "e.g. `WIPRO.NS` or `507685.BO`."
+        "News: Moneycontrol, ET, Business Standard RSS.\n\n"
+        "Tip: Paste ticker directly e.g. `WIPRO.NS`"
     )
-    st.caption(f"Model in use: `{MODEL}`")
+    st.caption(f"Model: `{MODEL}`")
 
 
 # ── PAGE HEADER ───────────────────────────────────────────────────────────────
 st.title("📈 AI Stock Advisor — India")
 st.caption(
-    f"Powered by `{MODEL}` + yfinance + MC / ET / BS RSS.  "
-    "For educational use only — not SEBI-registered advice."
+    f"Powered by `{MODEL}` + yfinance + RSS feeds. "
+    "Educational use only — not SEBI-registered advice."
 )
 
+# ── TABS ──────────────────────────────────────────────────────────────────────
+tab_market, tab_stocks, tab_mf, tab_wishlist = st.tabs([
+    "🏠 Market Overview",
+    "📊 Stock Analysis",
+    "💰 Mutual Funds",
+    "⭐ Wishlist",
+])
 
-# ── MAIN FLOW ─────────────────────────────────────────────────────────────────
-if analyze_btn:
-    if not user_input.strip():
-        st.warning("Please enter a company name or ticker.")
-        st.stop()
 
-    raw = user_input.strip()
+# ════════════════════════════════════════════════════════════════════════════════
+# TAB 1 — MARKET OVERVIEW (Gainers / Losers)
+# ════════════════════════════════════════════════════════════════════════════════
+with tab_market:
+    st.subheader("📈 Today's Top Gainers & Losers — Nifty 50")
+    st.caption("Refreshes every 15 minutes. Click 'Refresh' to force update.")
 
-    # ── Step 1: Resolve ticker ────────────────────────────────────────────────
-    if raw.upper().endswith((".NS", ".BO")):
-        ticker = raw.upper()
-        st.info(f"Using ticker directly: `{ticker}`")
-    elif raw.strip().isdigit():
-        ticker = f"{raw.strip()}.BO"
-        st.info(f"Using BSE code directly: `{ticker}`")
-    else:
-        with st.spinner(f"Looking up {exchange} ticker for '{raw}'..."):
-            ticker = resolve_ticker(raw, exchange)
+    if st.button("🔄 Refresh Market Data"):
+        st.cache_data.clear()
 
-        if not ticker:
-            st.error(f"Could not find a {exchange} ticker for **{raw}**.")
-            st.info(
-                "Try being more specific (e.g. 'Tata Consultancy Services' "
-                "instead of 'TCS'), or paste the ticker directly "
-                "(e.g. `TCS.NS` or `532540.BO`)."
+    with st.spinner("Fetching Nifty 50 movers..."):
+        gainers, losers = fetch_movers()
+
+    col_g, col_l = st.columns(2)
+
+    with col_g:
+        st.markdown("### 🟢 Top Gainers")
+        for s in gainers:
+            delta_str = f"+{s['change']}%"
+            st.metric(
+                label=s["name"],
+                value=f"₹{s['price']}",
+                delta=delta_str,
             )
-            st.stop()
+            if st.button(f"Analyse {s['name']}", key=f"g_{s['ticker']}"):
+                st.session_state["auto_ticker"] = s["ticker"]
+                st.session_state["auto_name"]   = s["name"]
+
+    with col_l:
+        st.markdown("### 🔴 Top Losers")
+        for s in losers:
+            delta_str = f"{s['change']}%"
+            st.metric(
+                label=s["name"],
+                value=f"₹{s['price']}",
+                delta=delta_str,
+            )
+            if st.button(f"Analyse {s['name']}", key=f"l_{s['ticker']}"):
+                st.session_state["auto_ticker"] = s["ticker"]
+                st.session_state["auto_name"]   = s["name"]
+
+    st.info(
+        "Click 'Analyse' on any stock above to jump to Stock Analysis tab, "
+        "or type any company name in the sidebar."
+    )
+
+
+# ════════════════════════════════════════════════════════════════════════════════
+# TAB 2 — STOCK ANALYSIS
+# ════════════════════════════════════════════════════════════════════════════════
+with tab_stocks:
+    # Check if user clicked Analyse from market overview
+    auto_ticker = st.session_state.get("auto_ticker")
+    auto_name   = st.session_state.get("auto_name")
+
+    if auto_ticker and not analyze_btn:
+        st.info(f"Auto-loaded from Market Overview: `{auto_ticker}`")
+        ticker  = auto_ticker
+        raw     = auto_name
+        do_analysis = True
+        st.session_state.pop("auto_ticker", None)
+        st.session_state.pop("auto_name",   None)
+    elif analyze_btn and user_input.strip():
+        raw = user_input.strip()
+        if raw.upper().endswith((".NS", ".BO")):
+            ticker = raw.upper()
+        elif raw.strip().isdigit():
+            ticker = f"{raw.strip()}.BO"
         else:
-            st.info(f"Ticker resolved: `{ticker}`")
-
-    # ── Step 2: Fetch price + news + analysis ────────────────────────────────
-    with st.status("Fetching data...", expanded=True) as status:
-
-        status.write(f"📊 Getting live price for `{ticker}` from yfinance...")
-        data = fetch_stock_data(ticker)
-
-        if not data:
-            st.error(
-                f"No price data returned for `{ticker}`. "
-                "It may be delisted, or the symbol may be wrong."
-            )
-            st.stop()
-
-        status.write("📰 Scanning Moneycontrol, ET, Business Standard RSS feeds...")
-        news_items = fetch_news(raw)
-        status.write(f"   → {len(news_items)} relevant headline(s) found")
-
-        status.write(f"🤖 Sending everything to `{MODEL}` for analysis...")
-        analysis = get_gemini_analysis(raw, data, news_items, buy_price)
-
-        status.update(label="Analysis complete!", state="complete", expanded=False)
-
-    # ── METRICS ───────────────────────────────────────────────────────────────
-    st.subheader(f"📌 {raw.title()}  ({ticker})")
-
-    c1, c2, c3, c4 = st.columns(4)
-    c1.metric("Price",     f"₹{data['price']}",
-              f"₹{data['change']} ({data['change_pct']}%)")
-    c2.metric("52W High",  f"₹{data['high_52w']}")
-    c3.metric("52W Low",   f"₹{data['low_52w']}")
-    c4.metric("SMA 20/50", f"₹{data['sma20']}",
-              delta=f"50d ₹{data['sma50']}" if data["sma50"] else "50d N/A",
-              delta_color="off")
-
-    # ── P&L FOR HOLDERS ───────────────────────────────────────────────────────
-    if buy_price > 0:
-        pl     = round(data["price"] - buy_price, 2)
-        pl_pct = round((pl / buy_price) * 100, 2)
-        st.subheader("💼 Your Position")
-        p1, p2 = st.columns(2)
-        p1.metric("Buy Price",      f"₹{buy_price:.2f}")
-        p2.metric("Unrealised P&L", f"₹{pl:+.2f}", f"{pl_pct:+.2f}%")
-
-    # ── CHART ─────────────────────────────────────────────────────────────────
-    st.subheader("3-Month Price Chart")
-    st.line_chart(data["hist"][["Close"]].rename(columns={"Close": "Price (₹)"}))
-
-    # ── NEWS ──────────────────────────────────────────────────────────────────
-    st.subheader(f"📰 Recent Headlines ({len(news_items)} found)")
-    if news_items:
-        for item in news_items:
-            with st.expander(f"[{item['source']}] {item['title']}"):
-                if item["summary"]:
-                    st.write(item["summary"])
-                if item["link"]:
-                    st.markdown(f"[Read full article →]({item['link']})")
-                if item["published"]:
-                    st.caption(f"Published: {item['published']}")
+            with st.spinner(f"Looking up {exchange} ticker for '{raw}'..."):
+                ticker = resolve_ticker(raw, exchange)
+            if not ticker:
+                st.error(f"Could not find ticker for **{raw}**.")
+                st.info("Try pasting the ticker directly e.g. `WIPRO.NS`")
+                st.stop()
+        st.info(f"Ticker resolved: `{ticker}`")
+        do_analysis = True
     else:
-        st.info(
-            "No headlines matched this company in today's feeds. "
-            "AI analysis is based on price data only."
+        do_analysis = False
+
+    if do_analysis:
+        with st.status("Fetching data...", expanded=True) as status:
+            status.write(f"📊 Fetching price for `{ticker}`...")
+            data = fetch_stock_data(ticker)
+            if not data:
+                st.error(f"No data for `{ticker}`. May be delisted or wrong symbol.")
+                st.stop()
+
+            status.write("📰 Scanning news feeds...")
+            news_items = fetch_news(raw)
+            status.write(f"   → {len(news_items)} relevant headline(s) found")
+
+            status.write("🤖 Running AI analysis...")
+            analysis = get_gemini_analysis(raw, data, news_items, buy_price)
+            status.update(label="Done!", state="complete", expanded=False)
+
+        # Metrics
+        st.subheader(f"📌 {raw.title()}  ({ticker})")
+        c1, c2, c3, c4 = st.columns(4)
+        c1.metric("Price",     f"₹{data['price']}",
+                  f"₹{data['change']} ({data['change_pct']}%)")
+        c2.metric("52W High",  f"₹{data['high_52w']}")
+        c3.metric("52W Low",   f"₹{data['low_52w']}")
+        c4.metric("SMA 20/50", f"₹{data['sma20']}",
+                  delta=f"50d ₹{data['sma50']}" if data["sma50"] else "50d N/A",
+                  delta_color="off")
+
+        # P&L
+        if buy_price > 0:
+            pl     = round(data["price"] - buy_price, 2)
+            pl_pct = round((pl / buy_price) * 100, 2)
+            st.subheader("💼 Your Position")
+            p1, p2 = st.columns(2)
+            p1.metric("Buy Price",      f"₹{buy_price:.2f}")
+            p2.metric("Unrealised P&L", f"₹{pl:+.2f}", f"{pl_pct:+.2f}%")
+
+        # Chart
+        st.subheader("3-Month Price Chart")
+        st.line_chart(data["hist"][["Close"]].rename(columns={"Close": "Price (₹)"}))
+
+        # Wishlist button
+        already = any(w["ticker"] == ticker for w in st.session_state.wishlist)
+        if not already:
+            if st.button(f"⭐ Add {raw.title()} to Wishlist"):
+                st.session_state.wishlist.append({
+                    "name":   raw.title(),
+                    "ticker": ticker,
+                    "price":  data["price"],
+                    "added":  datetime.now().strftime("%d %b %Y %I:%M %p"),
+                })
+                st.success(f"{raw.title()} added to wishlist!")
+        else:
+            st.info(f"✅ {raw.title()} is already in your wishlist.")
+
+        # News
+        st.subheader(f"📰 Headlines ({len(news_items)} found)")
+        if news_items:
+            for item in news_items:
+                with st.expander(f"[{item['source']}] {item['title']}"):
+                    if item["summary"]:
+                        st.write(item["summary"])
+                    if item["link"]:
+                        st.markdown(f"[Read full article →]({item['link']})")
+                    if item["published"]:
+                        st.caption(f"Published: {item['published']}")
+        else:
+            st.info("No matching headlines today. Analysis based on price data only.")
+
+        # Analysis
+        st.subheader("🤖 AI Analysis")
+        st.markdown(analysis)
+        st.divider()
+        st.caption(
+            f"Generated {datetime.now().strftime('%d %b %Y, %I:%M %p')} IST  |  "
+            "Not SEBI-registered financial advice."
+        )
+    else:
+        st.info("Enter a company name in the sidebar and click **Run Analysis ▶**")
+
+
+# ════════════════════════════════════════════════════════════════════════════════
+# TAB 3 — MUTUAL FUNDS
+# ════════════════════════════════════════════════════════════════════════════════
+with tab_mf:
+    st.subheader("💰 Mutual Fund Advisor")
+    st.caption("Get 10 personalised fund recommendations based on your profile.")
+
+    mf1, mf2 = st.columns(2)
+    with mf1:
+        inv_type = st.radio("Investment type", ["SIP", "Lump Sum"], horizontal=True)
+        amount   = st.number_input(
+            "Amount (₹)" + (" per month" if inv_type == "SIP" else " one-time"),
+            min_value=500.0, step=500.0, value=5000.0,
+        )
+    with mf2:
+        risk = st.select_slider(
+            "Risk appetite",
+            options=["Very Low", "Low", "Moderate", "High", "Very High"],
+            value="Moderate",
+        )
+        if inv_type == "SIP":
+            tenure = st.slider("Investment tenure (years)", 1, 30, 5)
+        else:
+            tenure = st.slider("Investment horizon (years)", 1, 20, 3)
+
+    mf_btn = st.button("Get Fund Recommendations 🔍", type="primary")
+
+    if mf_btn:
+        with st.spinner("Asking AI for personalised fund recommendations..."):
+            mf_result = get_mf_recommendations(inv_type, tenure, risk, amount)
+        st.subheader("📋 Your Recommended Funds")
+        st.markdown(mf_result)
+        st.divider()
+        st.caption(
+            "Fund recommendations are AI-generated based on historical data. "
+            "Past performance is not a guarantee of future returns. "
+            "Not SEBI-registered financial advice."
         )
 
-    # ── AI ANALYSIS ───────────────────────────────────────────────────────────
-    st.subheader("🤖 AI Analysis")
-    st.markdown(analysis)
 
-    st.divider()
-    st.caption(
-        f"Generated {datetime.now().strftime('%d %b %Y, %I:%M %p')} IST  |  "
-        "Not SEBI-registered financial advice."
-    )
+# ════════════════════════════════════════════════════════════════════════════════
+# TAB 4 — WISHLIST
+# ════════════════════════════════════════════════════════════════════════════════
+with tab_wishlist:
+    st.subheader("⭐ Your Wishlist")
+
+    if not st.session_state.wishlist:
+        st.info(
+            "Your wishlist is empty. Analyse a stock and click "
+            "'Add to Wishlist' to save it here."
+        )
+    else:
+        for i, item in enumerate(st.session_state.wishlist):
+            col_a, col_b, col_c = st.columns([3, 2, 1])
+            with col_a:
+                st.markdown(f"**{item['name']}** (`{item['ticker']}`)")
+                st.caption(f"Added {item['added']}")
+            with col_b:
+                st.metric("Price when added", f"₹{item['price']}")
+            with col_c:
+                if st.button("Remove", key=f"rm_{i}"):
+                    st.session_state.wishlist.pop(i)
+                    st.rerun()
+
+        st.divider()
+
+        # Email section
+        st.subheader("📧 Email Your Wishlist")
+        st.caption(
+            "Requires EMAIL_ADDRESS and EMAIL_APP_PASSWORD in Streamlit Secrets. "
+            "Use a Gmail App Password — not your regular Gmail password."
+        )
+        to_email  = st.text_input("Your email address", placeholder="you@gmail.com")
+        email_btn = st.button("Send Wishlist to Email 📨", type="primary")
+
+        if email_btn:
+            if not to_email or "@" not in to_email:
+                st.warning("Please enter a valid email address.")
+            elif "EMAIL_ADDRESS" not in st.secrets:
+                st.error(
+                    "EMAIL_ADDRESS and EMAIL_APP_PASSWORD not found in Secrets. "
+                    "Add them in Streamlit Cloud → Settings → Secrets."
+                )
+            else:
+                with st.spinner("Sending email..."):
+                    ok = send_wishlist_email(to_email, st.session_state.wishlist)
+                if ok:
+                    st.success(f"Wishlist sent to {to_email} successfully!")
