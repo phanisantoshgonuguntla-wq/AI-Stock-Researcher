@@ -4,11 +4,11 @@ import google.generativeai as genai
 import feedparser
 import smtplib
 import re
+import json
+import os
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from datetime import datetime
-import json
-import os
 
 # ── CONFIG ────────────────────────────────────────────────────────────────────
 st.set_page_config(page_title="AI Stock Advisor (India)", layout="wide", page_icon="📈")
@@ -20,11 +20,10 @@ except Exception:
     st.stop()
 
 
-# ── WISHLIST FILE PATH ────────────────────────────────────────────────────────
+# ── WISHLIST FILE ─────────────────────────────────────────────────────────────
 WISHLIST_FILE = "wishlist.json"
 
 def load_wishlist() -> list[dict]:
-    """Load wishlist from disk — returns empty list if file doesn't exist."""
     try:
         if os.path.exists(WISHLIST_FILE):
             with open(WISHLIST_FILE, "r") as f:
@@ -34,22 +33,22 @@ def load_wishlist() -> list[dict]:
     return []
 
 def save_wishlist(wishlist: list[dict]):
-    """Save wishlist to disk."""
     try:
         with open(WISHLIST_FILE, "w") as f:
             json.dump(wishlist, f, indent=2)
     except Exception as e:
         st.warning(f"Could not save wishlist: {e}")
 
+
 # ── SESSION STATE INIT ────────────────────────────────────────────────────────
-if "wishlist" not in st.session_state:
-    st.session_state.wishlist = load_wishlist()  # ← load from disk on first run
-if "last_analysis" not in st.session_state:
-    st.session_state.last_analysis = None
-if "auto_ticker" not in st.session_state:
-    st.session_state.auto_ticker = None
-if "auto_name" not in st.session_state:
-    st.session_state.auto_name = None
+if "wishlist"       not in st.session_state:
+    st.session_state.wishlist       = load_wishlist()
+if "last_analysis"  not in st.session_state:
+    st.session_state.last_analysis  = None
+if "auto_ticker"    not in st.session_state:
+    st.session_state.auto_ticker    = None
+if "auto_name"      not in st.session_state:
+    st.session_state.auto_name      = None
 
 
 # ── AUTO-DETECT BEST MODEL ────────────────────────────────────────────────────
@@ -81,8 +80,9 @@ MODEL = get_best_model()
 # ── HELPERS ───────────────────────────────────────────────────────────────────
 def strip_html(text: str) -> str:
     text = re.sub(r"<[^>]+>", "", text)
-    text = text.replace("&amp;", "&").replace("&lt;", "<").replace(
-        "&gt;", ">").replace("&nbsp;", " ").replace("&quot;", '"')
+    text = (text.replace("&amp;", "&").replace("&lt;", "<")
+                .replace("&gt;", ">").replace("&nbsp;", " ")
+                .replace("&quot;", '"'))
     return text.strip()
 
 
@@ -112,7 +112,7 @@ def add_to_wishlist(name: str, ticker: str, price: float) -> bool:
             "price":  price,
             "added":  datetime.now().strftime("%d %b %Y %I:%M %p"),
         })
-        save_wishlist(st.session_state.wishlist)  # ← persist to disk
+        save_wishlist(st.session_state.wishlist)
         return True
     return False
 
@@ -230,9 +230,9 @@ RSS_SOURCES = {
 }
 
 def fetch_news(company_name: str, max_per_source: int = 3) -> list[dict]:
-    results      = []
-    name_lower   = company_name.lower()
-    words        = [w for w in name_lower.split() if len(w) > 3]
+    results    = []
+    name_lower = company_name.lower()
+    words      = [w for w in name_lower.split() if len(w) > 3]
     search_terms = list({name_lower} | set(words)) if words else [name_lower]
 
     for source_name, url in RSS_SOURCES.items():
@@ -246,10 +246,8 @@ def fetch_news(company_name: str, max_per_source: int = 3) -> list[dict]:
                 summary = strip_html(
                     entry.get("summary", entry.get("description", "")))
                 text = (title + " " + summary).lower()
-
                 full_match = name_lower in text
                 word_match = words and all(w in text for w in words)
-
                 if full_match or word_match:
                     results.append({
                         "source":    source_name,
@@ -405,7 +403,6 @@ with st.sidebar:
     )
     st.caption(f"Model: `{MODEL}`")
 
-    # ── Wishlist quick-view in sidebar ────────────────────────────────────────
     if st.session_state.wishlist:
         st.divider()
         st.markdown(f"⭐ **Wishlist ({len(st.session_state.wishlist)} stocks)**")
@@ -485,13 +482,11 @@ with tab_market:
 # ════════════════════════════════════════════════════════════════════════════════
 with tab_stocks:
 
-    # Determine what to analyse
     do_analysis = False
     raw    = ""
     ticker = ""
 
     if st.session_state.auto_ticker:
-        # Triggered from Market Overview
         ticker  = st.session_state.auto_ticker
         raw     = st.session_state.auto_name
         st.session_state.auto_ticker = None
@@ -513,29 +508,21 @@ with tab_stocks:
                 st.stop()
         do_analysis = True
 
-    # ── Run analysis and store result in session_state ────────────────────────
     if do_analysis:
         st.info(f"Ticker: `{ticker}`")
         with st.status("Fetching data...", expanded=True) as status:
-
             status.write(f"📊 Fetching price for `{ticker}`...")
             data = fetch_stock_data(ticker)
             if not data:
-                st.error(
-                    f"No data for `{ticker}`. "
-                    "May be delisted or wrong symbol."
-                )
+                st.error(f"No data for `{ticker}`. May be delisted or wrong symbol.")
                 st.stop()
-
             status.write("📰 Scanning news feeds...")
             news_items = fetch_news(raw)
             status.write(f"   → {len(news_items)} headline(s) found")
-
             status.write("🤖 Running AI analysis...")
             analysis = get_gemini_analysis(raw, data, news_items, buy_price)
             status.update(label="Done!", state="complete", expanded=False)
 
-        # Store in session state so it survives tab switches
         st.session_state.last_analysis = {
             "raw":        raw,
             "ticker":     ticker,
@@ -545,14 +532,12 @@ with tab_stocks:
             "buy_price":  buy_price,
         }
 
-    # ── Display last analysis (persists across tab switches) ──────────────────
     if st.session_state.last_analysis:
         la = st.session_state.last_analysis
         d  = la["data"]
 
         st.subheader(f"📌 {la['raw'].title()}  ({la['ticker']})")
 
-        # Metrics
         c1, c2, c3, c4 = st.columns(4)
         c1.metric("Price",     f"₹{d['price']}",
                   f"₹{d['change']} ({d['change_pct']}%)")
@@ -562,7 +547,6 @@ with tab_stocks:
                   delta=f"50d ₹{d['sma50']}" if d["sma50"] else "50d N/A",
                   delta_color="off")
 
-        # P&L
         if la["buy_price"] > 0:
             pl     = round(d["price"] - la["buy_price"], 2)
             pl_pct = round((pl / la["buy_price"]) * 100, 2)
@@ -571,12 +555,9 @@ with tab_stocks:
             p1.metric("Buy Price",      f"₹{la['buy_price']:.2f}")
             p2.metric("Unrealised P&L", f"₹{pl:+.2f}", f"{pl_pct:+.2f}%")
 
-        # Chart
         st.subheader("3-Month Price Chart")
-        st.line_chart(d["hist"][["Close"]].rename(
-            columns={"Close": "Price (₹)"}))
+        st.line_chart(d["hist"][["Close"]].rename(columns={"Close": "Price (₹)"}))
 
-        # ── WISHLIST BUTTON ───────────────────────────────────────────────────
         st.divider()
         already = any(
             w["ticker"] == la["ticker"] for w in st.session_state.wishlist)
@@ -588,6 +569,7 @@ with tab_stocks:
                     w for w in st.session_state.wishlist
                     if w["ticker"] != la["ticker"]
                 ]
+                save_wishlist(st.session_state.wishlist)
                 st.rerun()
         else:
             if st.button(
@@ -595,8 +577,7 @@ with tab_stocks:
                 type="primary",
                 use_container_width=True,
             ):
-                added = add_to_wishlist(
-                    la["raw"].title(), la["ticker"], d["price"])
+                added = add_to_wishlist(la["raw"].title(), la["ticker"], d["price"])
                 if added:
                     st.success(
                         f"✅ {la['raw'].title()} added to wishlist! "
@@ -606,7 +587,6 @@ with tab_stocks:
 
         st.divider()
 
-        # News
         st.subheader(f"📰 Headlines ({len(la['news_items'])} found)")
         if la["news_items"]:
             for item in la["news_items"]:
@@ -618,12 +598,8 @@ with tab_stocks:
                     if item["published"]:
                         st.caption(f"Published: {item['published']}")
         else:
-            st.info(
-                "No matching headlines today. "
-                "Analysis based on price data only."
-            )
+            st.info("No matching headlines today. Analysis based on price data only.")
 
-        # Analysis
         st.subheader("🤖 AI Analysis")
         st.markdown(la["analysis"])
         st.divider()
@@ -694,11 +670,9 @@ with tab_wishlist:
             "Or click **Analyse ▶** on any stock in the 🏠 Market Overview tab."
         )
     else:
-        # Summary metrics
         st.caption(f"{len(st.session_state.wishlist)} stock(s) saved")
         st.divider()
 
-        # List all wishlist items
         for i, item in enumerate(st.session_state.wishlist):
             col_a, col_b, col_c, col_d = st.columns([3, 2, 2, 1])
             with col_a:
@@ -707,12 +681,11 @@ with tab_wishlist:
             with col_b:
                 st.metric("Price when added", f"₹{item['price']}")
             with col_c:
-                # Show live price vs saved price
                 try:
                     live_hist = yf.Ticker(item["ticker"]).history(period="1d")
                     if not live_hist.empty:
-                        live  = round(float(live_hist["Close"].iloc[-1]), 2)
-                        delta = round(live - item["price"], 2)
+                        live      = round(float(live_hist["Close"].iloc[-1]), 2)
+                        delta     = round(live - item["price"], 2)
                         delta_pct = round((delta / item["price"]) * 100, 2)
                         st.metric(
                             "Live Price",
@@ -722,33 +695,28 @@ with tab_wishlist:
                 except Exception:
                     st.caption("Live price unavailable")
             with col_d:
+                # ── this is the ONLY delete button per row ────────────────────
                 if st.button("🗑️", key=f"del_{i}", help="Remove from wishlist"):
                     st.session_state.wishlist.pop(i)
+                    save_wishlist(st.session_state.wishlist)
                     st.rerun()
 
             st.divider()
 
-       # Individual remove button
-if st.button("🗑️", key=f"del_{i}", help="Remove from wishlist"):
-    st.session_state.wishlist.pop(i)
-    save_wishlist(st.session_state.wishlist)  # ← persist to disk
-    st.rerun()
+        # ── Clear all — inside else block, after the loop ─────────────────────
+        if st.button("🗑️ Clear Entire Wishlist", type="secondary"):
+            st.session_state.wishlist = []
+            save_wishlist(st.session_state.wishlist)
+            st.rerun()
 
-# Clear all button
-if st.button("🗑️ Clear Entire Wishlist", type="secondary"):
-    st.session_state.wishlist = []
-    save_wishlist(st.session_state.wishlist)  # ← persist to disk
-    st.rerun()
-
-        # ── Email section ─────────────────────────────────────────────────────
+        # ── Email section — inside else block, after clear button ─────────────
         st.subheader("📧 Email Your Wishlist")
         st.caption(
             "Add EMAIL_ADDRESS and EMAIL_APP_PASSWORD to Streamlit Secrets. "
             "Use a Gmail App Password from "
             "myaccount.google.com → Security → App Passwords."
         )
-        to_email  = st.text_input(
-            "Your email address", placeholder="you@gmail.com")
+        to_email  = st.text_input("Your email address", placeholder="you@gmail.com")
         email_btn = st.button("Send Wishlist to Email 📨", type="primary")
 
         if email_btn:
