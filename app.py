@@ -13,9 +13,34 @@ except Exception:
     st.error("🔑 Add GOOGLE_API_KEY to Streamlit Secrets (Settings → Secrets).")
     st.stop()
 
-MODEL = "gemini-2.5-flash-preview-05-20"
 
-# ── TICKER RESOLVER (Gemini-powered, no hardcoded maps) ───────────────────────
+# ── AUTO-DETECT BEST AVAILABLE MODEL ─────────────────────────────────────────
+def get_best_model() -> str:
+    preferred = [
+        "gemini-2.5-flash",
+        "gemini-2.5-flash-preview-05-20",
+        "gemini-2.5-flash-preview-04-17",
+        "gemini-2.0-flash",
+        "gemini-2.0-flash-001",
+        "gemini-1.5-flash",
+    ]
+    try:
+        available = [
+            m.name.replace("models/", "")
+            for m in genai.list_models()
+            if "generateContent" in m.supported_generation_methods
+        ]
+        for model in preferred:
+            if model in available:
+                return model
+    except Exception:
+        pass
+    return "gemini-1.5-flash"
+
+MODEL = get_best_model()
+
+
+# ── TICKER RESOLVER (Gemini-powered) ─────────────────────────────────────────
 def resolve_ticker(company_name: str, exchange: str = "NSE") -> str | None:
     suffix = ".NS" if exchange == "NSE" else ".BO"
 
@@ -34,6 +59,8 @@ Examples:
 - "Wipro" on NSE → WIPRO.NS
 - "Zomato" on NSE → ZOMATO.NS
 - "ITC" on NSE → ITC.NS
+- "TCS" on NSE → TCS.NS
+- "SBI" on NSE → SBIN.NS
 
 If you cannot determine the ticker with confidence, return exactly: UNKNOWN
 
@@ -44,27 +71,23 @@ Your answer (ticker symbol only):"""
         response = model.generate_content(
             prompt,
             generation_config=genai.GenerationConfig(
-                max_output_tokens=50,  # gives model breathing room
-                temperature=0.1,       # slight flexibility fixes refusal on simple names
+                max_output_tokens=50,
+                temperature=0.1,
             ),
         )
         result = response.text.strip().upper()
 
-        # Clean up — Gemini sometimes adds punctuation, quotes, or newlines
+        # Clean up
         result = result.split("\n")[0].strip()
         result = result.replace("'", "").replace('"', "")
-
-        # Remove any duplicate dots (e.g. WIPRO..NS → WIPRO.NS)
         while ".." in result:
             result = result.replace("..", ".")
-
-        # Strip trailing punctuation
         result = result.rstrip(".,;:")
 
         if not result or result == "UNKNOWN":
             return None
 
-        # Ensure correct suffix is present
+        # Ensure suffix is present
         if not (result.endswith(".NS") or result.endswith(".BO")):
             result = result.split()[0] + suffix
 
@@ -144,7 +167,7 @@ def fetch_news(company_name: str, max_per_source: int = 3) -> list[dict]:
                     })
                     count += 1
         except Exception:
-            continue  # skip silently if a feed is down
+            continue
 
     return results
 
@@ -246,12 +269,13 @@ with st.sidebar:
         "Tip: If lookup fails, paste the ticker directly "
         "e.g. `WIPRO.NS` or `507685.BO`."
     )
+    st.caption(f"Model in use: `{MODEL}`")   # ← shows which model was auto-selected
 
 
 # ── PAGE HEADER ───────────────────────────────────────────────────────────────
 st.title("📈 AI Stock Advisor — India")
 st.caption(
-    f"Powered by {MODEL} + yfinance + MC / ET / BS RSS feeds.  "
+    f"Powered by `{MODEL}` + yfinance + MC / ET / BS RSS.  "
     "For educational use only — not SEBI-registered advice."
 )
 
@@ -266,11 +290,9 @@ if analyze_btn:
 
     # ── Step 1: Resolve ticker ────────────────────────────────────────────────
     if raw.upper().endswith((".NS", ".BO")):
-        # User typed a full ticker directly — skip Gemini lookup
         ticker = raw.upper()
         st.info(f"Using ticker directly: `{ticker}`")
     elif raw.strip().isdigit():
-        # User typed a raw BSE code like 532540
         ticker = f"{raw.strip()}.BO"
         st.info(f"Using BSE code directly: `{ticker}`")
     else:
@@ -303,7 +325,7 @@ if analyze_btn:
         news_items = fetch_news(raw)
         status.write(f"   → {len(news_items)} relevant headline(s) found")
 
-        status.write(f"🤖 Sending everything to {MODEL} for analysis...")
+        status.write(f"🤖 Sending everything to `{MODEL}` for analysis...")
         analysis = get_gemini_analysis(raw, data, news_items, buy_price)
 
         status.update(label="Analysis complete!", state="complete", expanded=False)
