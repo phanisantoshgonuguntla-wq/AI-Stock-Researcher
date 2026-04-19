@@ -7,6 +7,8 @@ import re
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from datetime import datetime
+import json
+import os
 
 # ── CONFIG ────────────────────────────────────────────────────────────────────
 st.set_page_config(page_title="AI Stock Advisor (India)", layout="wide", page_icon="📈")
@@ -18,14 +20,35 @@ except Exception:
     st.stop()
 
 
+# ── WISHLIST FILE PATH ────────────────────────────────────────────────────────
+WISHLIST_FILE = "wishlist.json"
+
+def load_wishlist() -> list[dict]:
+    """Load wishlist from disk — returns empty list if file doesn't exist."""
+    try:
+        if os.path.exists(WISHLIST_FILE):
+            with open(WISHLIST_FILE, "r") as f:
+                return json.load(f)
+    except Exception:
+        pass
+    return []
+
+def save_wishlist(wishlist: list[dict]):
+    """Save wishlist to disk."""
+    try:
+        with open(WISHLIST_FILE, "w") as f:
+            json.dump(wishlist, f, indent=2)
+    except Exception as e:
+        st.warning(f"Could not save wishlist: {e}")
+
 # ── SESSION STATE INIT ────────────────────────────────────────────────────────
-if "wishlist"        not in st.session_state:
-    st.session_state.wishlist = []
-if "last_analysis"   not in st.session_state:
-    st.session_state.last_analysis = None   # stores last analysed stock data
-if "auto_ticker"     not in st.session_state:
+if "wishlist" not in st.session_state:
+    st.session_state.wishlist = load_wishlist()  # ← load from disk on first run
+if "last_analysis" not in st.session_state:
+    st.session_state.last_analysis = None
+if "auto_ticker" not in st.session_state:
     st.session_state.auto_ticker = None
-if "auto_name"       not in st.session_state:
+if "auto_name" not in st.session_state:
     st.session_state.auto_name = None
 
 
@@ -80,8 +103,7 @@ def clean_ticker(raw: str, suffix: str) -> str | None:
     return result
 
 
-def add_to_wishlist(name: str, ticker: str, price: float):
-    """Add stock to wishlist — prevents duplicates."""
+def add_to_wishlist(name: str, ticker: str, price: float) -> bool:
     already = any(w["ticker"] == ticker for w in st.session_state.wishlist)
     if not already:
         st.session_state.wishlist.append({
@@ -90,6 +112,7 @@ def add_to_wishlist(name: str, ticker: str, price: float):
             "price":  price,
             "added":  datetime.now().strftime("%d %b %Y %I:%M %p"),
         })
+        save_wishlist(st.session_state.wishlist)  # ← persist to disk
         return True
     return False
 
@@ -705,10 +728,17 @@ with tab_wishlist:
 
             st.divider()
 
-        # Clear all
-        if st.button("🗑️ Clear Entire Wishlist", type="secondary"):
-            st.session_state.wishlist = []
-            st.rerun()
+       # Individual remove button
+if st.button("🗑️", key=f"del_{i}", help="Remove from wishlist"):
+    st.session_state.wishlist.pop(i)
+    save_wishlist(st.session_state.wishlist)  # ← persist to disk
+    st.rerun()
+
+# Clear all button
+if st.button("🗑️ Clear Entire Wishlist", type="secondary"):
+    st.session_state.wishlist = []
+    save_wishlist(st.session_state.wishlist)  # ← persist to disk
+    st.rerun()
 
         # ── Email section ─────────────────────────────────────────────────────
         st.subheader("📧 Email Your Wishlist")
