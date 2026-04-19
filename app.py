@@ -41,65 +41,101 @@ MODEL = get_best_model()
 
 
 # ── TICKER RESOLVER ───────────────────────────────────────────────────────────
+def clean_ticker(raw: str, suffix: str) -> str | None:
+    """Clean and validate a raw ticker string returned by Gemini."""
+    result = raw.strip().upper()
+    result = result.split("\n")[0].strip()       # first line only
+    result = result.replace("'", "").replace('"', "")
+    result = result.replace(" ", "")             # remove any spaces
+    while ".." in result:
+        result = result.replace("..", ".")
+    result = result.rstrip(".,;:")
+
+    if not result or result == "UNKNOWN":
+        return None
+
+    # Must be at least 2 characters before the suffix
+    base = result.replace(".NS", "").replace(".BO", "")
+    if len(base) < 2:
+        return None
+
+    # Add suffix if missing
+    if not (result.endswith(".NS") or result.endswith(".BO")):
+        result = result.split()[0] + suffix
+
+    return result
+
+
 def resolve_ticker(company_name: str, exchange: str = "NSE") -> str | None:
     suffix = ".NS" if exchange == "NSE" else ".BO"
 
-    prompt = f"""You are a stock ticker lookup tool for Indian markets.
+    prompt = f"""You are a stock ticker database for Indian stock markets.
 
-Given company name: "{company_name}"
+Task: Find the exact NSE/BSE ticker symbol for the company below.
+
+Company: {company_name}
 Exchange: {exchange}
+Required suffix: {suffix}
 
-Return ONLY the ticker symbol with the {suffix} suffix. Nothing else. No explanation.
+Rules:
+- Reply with ONLY the complete ticker symbol including the suffix
+- Do not truncate or shorten the ticker
+- Do not add any explanation or extra text
 
-Examples:
-- "Reliance Industries" on NSE → RELIANCE.NS
-- "HDFC Bank" on NSE → HDFCBANK.NS
-- "Tata Motors" on BSE → 500570.BO
-- "Infosys" on NSE → INFY.NS
-- "Wipro" on NSE → WIPRO.NS
-- "Zomato" on NSE → ZOMATO.NS
-- "ITC" on NSE → ITC.NS
-- "TCS" on NSE → TCS.NS
-- "SBI" on NSE → SBIN.NS
+Correct examples of complete ticker symbols:
+WIPRO.NS
+RELIANCE.NS
+HDFCBANK.NS
+TCS.NS
+INFY.NS
+SBIN.NS
+ZOMATO.NS
+TATAMOTORS.NS
+BAJFINANCE.NS
+ICICIBANK.NS
+500570.BO
+532540.BO
 
-If you cannot determine the ticker with confidence, return exactly: UNKNOWN
+If truly unknown, reply: UNKNOWN
 
-Your answer (ticker symbol only):"""
+Complete ticker symbol for {company_name}:"""
 
     try:
         model = genai.GenerativeModel(MODEL)
+
+        # ── First attempt ─────────────────────────────────────────────────────
         response = model.generate_content(
             prompt,
             generation_config=genai.GenerationConfig(
-                max_output_tokens=50,
-                temperature=0.1,
+                max_output_tokens=200,   # raised significantly — prevents truncation
+                temperature=0.0,
             ),
         )
+        result = clean_ticker(response.text, suffix)
 
-        # ── DEBUG ─────────────────────────────────────────────────────────────
-        raw_response = response.text
-        st.info(f"DEBUG 1 — Raw Gemini response: `{repr(raw_response)}`")
+        # ── Validate: if result looks truncated, retry with explicit length hint
+        if result:
+            base = result.replace(".NS", "").replace(".BO", "")
+            if len(base) < 3:
+                # Looks truncated — retry with stronger instruction
+                retry_prompt = f"""The NSE ticker symbol for {company_name} is a string of letters followed by .NS
+Write the FULL ticker symbol without cutting it short.
+For example Wipro's full ticker is WIPRO.NS not WIP.NS
+Write the complete ticker for {company_name} on {exchange}:"""
 
-        result = raw_response.strip().upper()
-        result = result.split("\n")[0].strip()
-        result = result.replace("'", "").replace('"', "")
-        while ".." in result:
-            result = result.replace("..", ".")
-        result = result.rstrip(".,;:")
+                retry_response = model.generate_content(
+                    retry_prompt,
+                    generation_config=genai.GenerationConfig(
+                        max_output_tokens=200,
+                        temperature=0.0,
+                    ),
+                )
+                result = clean_ticker(retry_response.text, suffix)
 
-        st.info(f"DEBUG 2 — After cleanup: `{repr(result)}`")
-
-        if not result or result == "UNKNOWN":
-            return None
-
-        if not (result.endswith(".NS") or result.endswith(".BO")):
-            result = result.split()[0] + suffix
-
-        st.info(f"DEBUG 3 — Final ticker: `{repr(result)}`")
         return result
 
     except Exception as e:
-        st.error(f"DEBUG — Ticker lookup FULL error: {repr(e)}")
+        st.warning(f"Ticker lookup error: {e}")
         return None
 
 
@@ -151,6 +187,10 @@ RSS_SOURCES = {
 def fetch_news(company_name: str, max_per_source: int = 3) -> list[dict]:
     results      = []
     search_terms = [w.lower() for w in company_name.split() if len(w) > 3]
+
+    # If the entire name is short (e.g. "SBI", "ITC"), use it as-is
+    if not search_terms:
+        search_terms = [company_name.lower()]
 
     for source_name, url in RSS_SOURCES.items():
         try:
@@ -312,6 +352,8 @@ if analyze_btn:
                 "(e.g. `TCS.NS` or `532540.BO`)."
             )
             st.stop()
+        else:
+            st.info(f"Ticker resolved: `{ticker}`")
 
     # ── Step 2: Fetch price + news + analysis ────────────────────────────────
     with st.status("Fetching data...", expanded=True) as status:
