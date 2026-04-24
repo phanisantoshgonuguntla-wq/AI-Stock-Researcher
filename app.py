@@ -7,6 +7,7 @@ import re
 import json
 import os
 import numpy as np
+import pandas as pd
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 from email.mime.text import MIMEText
@@ -421,48 +422,60 @@ def simulate_pnl(ticker: str, amount: float, inv_date: str) -> dict | None:
         start = datetime.strptime(inv_date, "%Y-%m-%d")
         end   = datetime.now()
 
-        # Stock data
-        hist = yf.download(ticker, start=start, end=end, progress=False)
-        if hist.empty or len(hist) < 2:
+        # ── Stock data ────────────────────────────────────────────────────────
+        raw_hist = yf.download(ticker, start=start, end=end, progress=False)
+        if raw_hist.empty or len(raw_hist) < 2:
             return None
 
-        buy_price   = float(hist["Close"].iloc[0])
-        sell_price  = float(hist["Close"].iloc[-1])
+        # Fix for yfinance MultiIndex columns (newer versions)
+        # Flatten MultiIndex if present so ["Close"] returns a plain Series
+        if isinstance(raw_hist.columns, pd.MultiIndex):
+            raw_hist.columns = raw_hist.columns.get_level_values(0)
+
+        close       = raw_hist["Close"].squeeze()   # ensure 1D Series
+        buy_price   = float(close.iloc[0])
+        sell_price  = float(close.iloc[-1])
         shares      = amount / buy_price
         curr_value  = shares * sell_price
         pnl         = curr_value - amount
         pnl_pct     = (pnl / amount) * 100
         days        = (end - start).days
         years       = days / 365.25
-        cagr        = ((curr_value / amount) ** (1 / years) - 1) * 100 if years > 0 else 0
+        cagr        = ((curr_value / amount) ** (1 / years) - 1) * 100 \
+                      if years > 0 else 0
 
-        # Nifty 50 comparison
-        nifty = yf.download("^NSEI", start=start, end=end, progress=False)
-        nifty_return = 0.0
-        if not nifty.empty:
-            n_start = float(nifty["Close"].iloc[0])
-            n_end   = float(nifty["Close"].iloc[-1])
+        # ── Nifty 50 comparison ───────────────────────────────────────────────
+        raw_nifty = yf.download("^NSEI", start=start, end=end, progress=False)
+        nifty_return  = 0.0
+        nifty_norm    = None
+
+        if not raw_nifty.empty:
+            if isinstance(raw_nifty.columns, pd.MultiIndex):
+                raw_nifty.columns = raw_nifty.columns.get_level_values(0)
+            nifty_close  = raw_nifty["Close"].squeeze()
+            n_start      = float(nifty_close.iloc[0])
+            n_end        = float(nifty_close.iloc[-1])
             nifty_return = ((n_end - n_start) / n_start) * 100
+            nifty_norm   = (nifty_close / nifty_close.iloc[0]) * amount
 
-        # Growth chart data (normalised to ₹100 for comparison)
-        stock_norm = (hist["Close"] / hist["Close"].iloc[0]) * amount
-        nifty_norm = (nifty["Close"] / nifty["Close"].iloc[0]) * amount \
-            if not nifty.empty else None
+        # ── Normalised growth chart ───────────────────────────────────────────
+        stock_norm = (close / close.iloc[0]) * amount
 
         return {
-            "buy_price":     round(buy_price, 2),
-            "sell_price":    round(sell_price, 2),
-            "shares":        round(shares, 4),
-            "invested":      round(amount, 2),
-            "curr_value":    round(curr_value, 2),
-            "pnl":           round(pnl, 2),
-            "pnl_pct":       round(pnl_pct, 2),
-            "cagr":          round(cagr, 2),
-            "nifty_return":  round(nifty_return, 2),
-            "stock_norm":    stock_norm,
-            "nifty_norm":    nifty_norm,
-            "days":          days,
+            "buy_price":    round(buy_price, 2),
+            "sell_price":   round(sell_price, 2),
+            "shares":       round(shares, 4),
+            "invested":     round(amount, 2),
+            "curr_value":   round(curr_value, 2),
+            "pnl":          round(pnl, 2),
+            "pnl_pct":      round(pnl_pct, 2),
+            "cagr":         round(cagr, 2),
+            "nifty_return": round(nifty_return, 2),
+            "stock_norm":   stock_norm,
+            "nifty_norm":   nifty_norm,
+            "days":         days,
         }
+
     except Exception as e:
         st.error(f"Simulator error: {e}")
         return None
