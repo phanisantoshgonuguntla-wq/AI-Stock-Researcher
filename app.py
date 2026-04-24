@@ -41,14 +41,14 @@ def save_wishlist(wishlist: list[dict]):
 
 
 # ── SESSION STATE INIT ────────────────────────────────────────────────────────
-if "wishlist"       not in st.session_state:
-    st.session_state.wishlist       = load_wishlist()
-if "last_analysis"  not in st.session_state:
-    st.session_state.last_analysis  = None
-if "auto_ticker"    not in st.session_state:
-    st.session_state.auto_ticker    = None
-if "auto_name"      not in st.session_state:
-    st.session_state.auto_name      = None
+if "wishlist"      not in st.session_state:
+    st.session_state.wishlist      = load_wishlist()
+if "last_analysis" not in st.session_state:
+    st.session_state.last_analysis = None
+if "auto_ticker"   not in st.session_state:
+    st.session_state.auto_ticker   = None
+if "auto_name"     not in st.session_state:
+    st.session_state.auto_name     = None
 
 
 # ── AUTO-DETECT BEST MODEL ────────────────────────────────────────────────────
@@ -361,10 +361,7 @@ def send_wishlist_email(to_email: str, wishlist: list[dict]) -> bool:
                 f"  Price when added : ₹{item['price']}\n"
                 f"  Added on         : {item['added']}"
             )
-        lines.append(
-            "\n\n" + "=" * 40 +
-            "\nNot SEBI-registered financial advice."
-        )
+        lines.append("\n\n" + "=" * 40 + "\nNot SEBI-registered financial advice.")
         msg            = MIMEMultipart()
         msg["From"]    = sender
         msg["To"]      = to_email
@@ -379,30 +376,23 @@ def send_wishlist_email(to_email: str, wishlist: list[dict]) -> bool:
         return False
 
 
-# ── SIDEBAR ───────────────────────────────────────────────────────────────────
+# ── SIDEBAR ── minimal now, just info ────────────────────────────────────────
 with st.sidebar:
-    st.header("🔍 Analyse a Stock")
-    exchange   = st.radio("Exchange", ["NSE", "BSE"], horizontal=True)
-    st.caption("NSE recommended — better data quality.")
-    user_input = st.text_input(
-        "Company Name or Ticker",
-        placeholder="e.g. Wipro, HDFC Bank, RELIANCE.NS",
-    )
-    st.divider()
-    is_holding = st.checkbox("I already hold this stock")
-    buy_price  = 0.0
-    if is_holding:
-        buy_price = st.number_input(
-            "My buy price (₹)", min_value=0.01, step=0.5)
-    analyze_btn = st.button(
-        "Run Analysis ▶", type="primary", use_container_width=True)
+    st.header("📈 AI Stock Advisor")
+    st.caption(f"Model: `{MODEL}`")
     st.divider()
     st.caption(
-        "News: Moneycontrol, ET, Business Standard RSS.\n\n"
-        "Tip: Paste ticker directly e.g. `WIPRO.NS`"
+        "**How to use:**\n\n"
+        "🏠 Market Overview — today's gainers & losers\n\n"
+        "📊 Stock Analysis — search and analyse any stock\n\n"
+        "💰 Mutual Funds — get fund recommendations\n\n"
+        "⭐ Wishlist — save and track your stocks"
     )
-    st.caption(f"Model: `{MODEL}`")
+    st.divider()
+    st.caption("News: Moneycontrol, ET, Business Standard RSS.")
+    st.caption("Educational use only — not SEBI-registered advice.")
 
+    # Wishlist quick-view
     if st.session_state.wishlist:
         st.divider()
         st.markdown(f"⭐ **Wishlist ({len(st.session_state.wishlist)} stocks)**")
@@ -478,17 +468,54 @@ with tab_market:
 
 
 # ════════════════════════════════════════════════════════════════════════════════
-# TAB 2 — STOCK ANALYSIS
+# TAB 2 — STOCK ANALYSIS (input controls now live here)
 # ════════════════════════════════════════════════════════════════════════════════
 with tab_stocks:
 
+    # ── INPUT FORM (replaces sidebar controls) ────────────────────────────────
+    st.subheader("🔍 Search a Stock")
+
+    col1, col2 = st.columns([3, 1])
+    with col1:
+        user_input = st.text_input(
+            "Company Name or Ticker",
+            placeholder="e.g. Wipro, HDFC Bank, RELIANCE.NS, 500570.BO",
+            label_visibility="collapsed",
+        )
+    with col2:
+        exchange = st.radio(
+            "Exchange", ["NSE", "BSE"],
+            horizontal=True,
+            label_visibility="collapsed",
+        )
+
+    col3, col4 = st.columns([2, 2])
+    with col3:
+        is_holding = st.checkbox("I already hold this stock")
+    with col4:
+        buy_price = 0.0
+        if is_holding:
+            buy_price = st.number_input(
+                "My buy price (₹)", min_value=0.01, step=0.5,
+                label_visibility="visible",
+            )
+
+    analyze_btn = st.button(
+        "Run Analysis ▶",
+        type="primary",
+        use_container_width=True,
+    )
+
+    st.divider()
+
+    # ── ANALYSIS LOGIC ────────────────────────────────────────────────────────
     do_analysis = False
     raw    = ""
     ticker = ""
 
     if st.session_state.auto_ticker:
-        ticker  = st.session_state.auto_ticker
-        raw     = st.session_state.auto_name
+        ticker      = st.session_state.auto_ticker
+        raw         = st.session_state.auto_name
         st.session_state.auto_ticker = None
         st.session_state.auto_name   = None
         do_analysis = True
@@ -508,13 +535,19 @@ with tab_stocks:
                 st.stop()
         do_analysis = True
 
+    elif analyze_btn and not user_input.strip():
+        st.warning("Please enter a company name or ticker.")
+
     if do_analysis:
-        st.info(f"Ticker: `{ticker}`")
+        st.info(f"Ticker resolved: `{ticker}`")
         with st.status("Fetching data...", expanded=True) as status:
             status.write(f"📊 Fetching price for `{ticker}`...")
             data = fetch_stock_data(ticker)
             if not data:
-                st.error(f"No data for `{ticker}`. May be delisted or wrong symbol.")
+                st.error(
+                    f"No data for `{ticker}`. "
+                    "May be delisted or wrong symbol."
+                )
                 st.stop()
             status.write("📰 Scanning news feeds...")
             news_items = fetch_news(raw)
@@ -524,14 +557,15 @@ with tab_stocks:
             status.update(label="Done!", state="complete", expanded=False)
 
         st.session_state.last_analysis = {
-            "raw":        raw,
-            "ticker":     ticker,
-            "data":       data,
+            "raw":       raw,
+            "ticker":    ticker,
+            "data":      data,
             "news_items": news_items,
-            "analysis":   analysis,
-            "buy_price":  buy_price,
+            "analysis":  analysis,
+            "buy_price": buy_price,
         }
 
+    # ── DISPLAY RESULTS ───────────────────────────────────────────────────────
     if st.session_state.last_analysis:
         la = st.session_state.last_analysis
         d  = la["data"]
@@ -556,7 +590,8 @@ with tab_stocks:
             p2.metric("Unrealised P&L", f"₹{pl:+.2f}", f"{pl_pct:+.2f}%")
 
         st.subheader("3-Month Price Chart")
-        st.line_chart(d["hist"][["Close"]].rename(columns={"Close": "Price (₹)"}))
+        st.line_chart(d["hist"][["Close"]].rename(
+            columns={"Close": "Price (₹)"}))
 
         st.divider()
         already = any(
@@ -577,7 +612,8 @@ with tab_stocks:
                 type="primary",
                 use_container_width=True,
             ):
-                added = add_to_wishlist(la["raw"].title(), la["ticker"], d["price"])
+                added = add_to_wishlist(
+                    la["raw"].title(), la["ticker"], d["price"])
                 if added:
                     st.success(
                         f"✅ {la['raw'].title()} added to wishlist! "
@@ -598,7 +634,10 @@ with tab_stocks:
                     if item["published"]:
                         st.caption(f"Published: {item['published']}")
         else:
-            st.info("No matching headlines today. Analysis based on price data only.")
+            st.info(
+                "No matching headlines today. "
+                "Analysis based on price data only."
+            )
 
         st.subheader("🤖 AI Analysis")
         st.markdown(la["analysis"])
@@ -610,7 +649,7 @@ with tab_stocks:
 
     else:
         st.info(
-            "Enter a company name in the sidebar and click **Run Analysis ▶**\n\n"
+            "Enter a company name above and click **Run Analysis ▶**\n\n"
             "Or click **Analyse ▶** on any stock in the 🏠 Market Overview tab."
         )
 
@@ -665,7 +704,7 @@ with tab_wishlist:
             "Your wishlist is empty.\n\n"
             "**How to add stocks:**\n"
             "1. Go to 📊 Stock Analysis tab\n"
-            "2. Run analysis on any stock\n"
+            "2. Search and analyse any stock\n"
             "3. Click the ⭐ Add to Wishlist button\n\n"
             "Or click **Analyse ▶** on any stock in the 🏠 Market Overview tab."
         )
@@ -695,7 +734,6 @@ with tab_wishlist:
                 except Exception:
                     st.caption("Live price unavailable")
             with col_d:
-                # ── this is the ONLY delete button per row ────────────────────
                 if st.button("🗑️", key=f"del_{i}", help="Remove from wishlist"):
                     st.session_state.wishlist.pop(i)
                     save_wishlist(st.session_state.wishlist)
@@ -703,13 +741,11 @@ with tab_wishlist:
 
             st.divider()
 
-        # ── Clear all — inside else block, after the loop ─────────────────────
         if st.button("🗑️ Clear Entire Wishlist", type="secondary"):
             st.session_state.wishlist = []
             save_wishlist(st.session_state.wishlist)
             st.rerun()
 
-        # ── Email section — inside else block, after clear button ─────────────
         st.subheader("📧 Email Your Wishlist")
         st.caption(
             "Add EMAIL_ADDRESS and EMAIL_APP_PASSWORD to Streamlit Secrets. "
