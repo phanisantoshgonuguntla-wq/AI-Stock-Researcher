@@ -1,6 +1,7 @@
 import streamlit as st
 import yfinance as yf
-import google.generativeai as genai
+from google import genai
+from google.genai import types as genai_types
 import feedparser
 import smtplib
 import re
@@ -18,7 +19,7 @@ from datetime import datetime, timedelta
 st.set_page_config(page_title="AI Stock Advisor (India)", layout="wide", page_icon="📈")
 
 try:
-    genai.configure(api_key=st.secrets["GOOGLE_API_KEY"])
+    gemini_client = genai.Client(api_key=st.secrets["GOOGLE_API_KEY"])
 except Exception:
     st.error("🔑 Add GOOGLE_API_KEY to Streamlit Secrets.")
     st.stop()
@@ -60,25 +61,19 @@ if "chat_history"  not in st.session_state:
 # ── AUTO-DETECT BEST MODEL ────────────────────────────────────────────────────
 def get_best_model() -> str:
     preferred = [
-        "gemini-2.5-flash-lite",
-        "gemini-2.5-flash-lite-preview-06-17",
         "gemini-2.5-flash",
-        "gemini-2.5-flash-preview-05-20",
+        "gemini-2.5-flash-lite",
         "gemini-2.0-flash",
         "gemini-1.5-flash",
     ]
     try:
-        available = [
-            m.name.replace("models/", "")
-            for m in genai.list_models()
-            if "generateContent" in m.supported_generation_methods
-        ]
+        available = [m.name for m in gemini_client.models.list()]
         for model in preferred:
-            if model in available:
+            if any(model in a for a in available):
                 return model
     except Exception:
         pass
-    return "gemini-1.5-flash"
+    return "gemini-2.0-flash"
 
 MODEL = get_best_model()
 
@@ -392,20 +387,23 @@ Examples: WIPRO.NS RELIANCE.NS HDFCBANK.NS TCS.NS INFY.NS SBIN.NS ZOMATO.NS
 If truly unknown reply: UNKNOWN
 Complete ticker symbol for {company_name}:"""
     try:
-        model    = genai.GenerativeModel(MODEL)
-        response = model.generate_content(
-            prompt,
-            generation_config=genai.GenerationConfig(
+        response = gemini_client.models.generate_content(
+            model=MODEL,
+            contents=prompt,
+            config=genai_types.GenerateContentConfig(
                 max_output_tokens=200, temperature=0.0),
         )
         result = clean_ticker(response.text, suffix)
         if result:
             base = result.replace(".NS", "").replace(".BO", "")
             if len(base) < 3:
-                retry = model.generate_content(
-                    f"Write the FULL NSE ticker for {company_name} ending in "
-                    f"{suffix}. Example: Wipro = WIPRO.NS. Just the ticker:",
-                    generation_config=genai.GenerationConfig(
+                retry = gemini_client.models.generate_content(
+                    model=MODEL,
+                    contents=(
+                        f"Write the FULL NSE ticker for {company_name} ending in "
+                        f"{suffix}. Example: Wipro = WIPRO.NS. Just the ticker:"
+                    ),
+                    config=genai_types.GenerateContentConfig(
                         max_output_tokens=200, temperature=0.0),
                 )
                 result = clean_ticker(retry.text, suffix)
@@ -526,11 +524,11 @@ NIFTY50 = [
     "LT.NS","AXISBANK.NS","ASIANPAINT.NS","MARUTI.NS","HCLTECH.NS",
     "WIPRO.NS","SUNPHARMA.NS","TITAN.NS","BAJFINANCE.NS","NESTLEIND.NS",
     "ULTRACEMCO.NS","TECHM.NS","POWERGRID.NS","NTPC.NS","ONGC.NS",
-    "TATAMOTORS.NS","TATASTEEL.NS","JSWSTEEL.NS","ADANIENT.NS","ADANIPORTS.NS",
+    "M&M.NS","TATASTEEL.NS","JSWSTEEL.NS","ADANIENT.NS","ADANIPORTS.NS",
     "COALINDIA.NS","BAJAJ-AUTO.NS","HEROMOTOCO.NS","EICHERMOT.NS","DIVISLAB.NS",
     "DRREDDY.NS","CIPLA.NS","APOLLOHOSP.NS","SBILIFE.NS","HDFCLIFE.NS",
-    "HINDALCO.NS","VEDL.NS","BPCL.NS","IOC.NS","GRASIM.NS",
-    "TATACONSUM.NS","PIDILITIND.NS","DMART.NS","BRITANNIA.NS","SHREECEM.NS",
+    "HINDALCO.NS","BPCL.NS","IOC.NS","GRASIM.NS","TATACONSUM.NS",
+    "PIDILITIND.NS","DMART.NS","BRITANNIA.NS","SHREECEM.NS","BAJAJFINSV.NS",
 ]
 
 @st.cache_data(ttl=900)
@@ -622,8 +620,8 @@ Format as a numbered list with real fund names.
 End with a 2-line summary of the overall strategy.
 """
     try:
-        model    = genai.GenerativeModel(MODEL)
-        response = model.generate_content(prompt)
+        response = gemini_client.models.generate_content(
+            model=MODEL, contents=prompt)
         return response.text
     except Exception as e:
         return f"⚠️ Gemini error: {e}"
@@ -683,8 +681,8 @@ One sentence with specific price levels to watch.
 Under 300 words. Simple language. No generic disclaimers.
 """
     try:
-        model    = genai.GenerativeModel(MODEL)
-        response = model.generate_content(prompt)
+        response = gemini_client.models.generate_content(
+            model=MODEL, contents=prompt)
         return response.text
     except Exception as e:
         return f"⚠️ Gemini error: {e}"
@@ -714,8 +712,8 @@ Use simple language suitable for a retail investor.
 If the question is not related to this stock or markets, politely redirect.
 """
     try:
-        model    = genai.GenerativeModel(MODEL)
-        response = model.generate_content(prompt)
+        response = gemini_client.models.generate_content(
+            model=MODEL, contents=prompt)
         return response.text
     except Exception as e:
         return f"⚠️ Gemini error: {e}"
