@@ -111,28 +111,53 @@ def clean_ticker(raw: str, suffix: str) -> str | None:
 
 def clean_yf_df(df: pd.DataFrame) -> pd.DataFrame:
     """
-    Flatten MultiIndex columns from yfinance and remove duplicates.
-    Works for both yf.Ticker().history() and yf.download() outputs.
+    Normalise a yfinance DataFrame regardless of version.
+
+    yfinance ≥ 0.2.50 returns MultiIndex columns like:
+        ('Close', 'RELIANCE.NS'), ('Open', 'RELIANCE.NS'), …
+    Older versions return flat columns: 'Close', 'Open', …
+
+    After this function every column is a plain string and duplicates
+    are removed, so df['Close'] always yields a plain Series.
     """
     if df is None or df.empty:
         return df
-    # Flatten MultiIndex — take the first level (OHLCV labels)
+
     if isinstance(df.columns, pd.MultiIndex):
+        # Keep only the price-field level (level 0) and drop the ticker level
+        df = df.copy()
         df.columns = df.columns.get_level_values(0)
-    # Remove duplicate column names (can happen after flatten)
-    df = df.loc[:, ~df.columns.duplicated()]
+
+    # After flattening we may still have duplicate column names
+    # (e.g. two 'Close' columns if two tickers were downloaded).
+    # Keep only the first occurrence.
+    df = df.loc[:, ~df.columns.duplicated(keep="first")]
     return df
 
 
 def safe_series(df: pd.DataFrame, col: str) -> pd.Series:
     """
-    Safely extract a column from a DataFrame as a 1-D Series.
-    Handles cases where squeeze() would produce a scalar (single-row df).
+    Extract *col* from *df* and guarantee a 1-D pd.Series is returned.
+
+    Handles every yfinance edge-case:
+    - Column is already a Series → return as-is
+    - Column is a 1-column DataFrame (can happen after MultiIndex flatten) → take iloc[:,0]
+    - squeeze() on a single-element Series would give a scalar → guard against that
     """
+    if col not in df.columns:
+        raise KeyError(f"Column '{col}' not found. Available: {df.columns.tolist()}")
+
     s = df[col]
+
+    # If it's still a DataFrame (duplicate columns survived), take the first
     if isinstance(s, pd.DataFrame):
         s = s.iloc[:, 0]
-    return s.squeeze() if hasattr(s, "squeeze") else s
+
+    # Ensure it really is a Series (not a scalar from a 1-row df)
+    if not isinstance(s, pd.Series):
+        s = pd.Series([s], index=df.index)
+
+    return s
 
 
 def add_to_wishlist(name: str, ticker: str, price: float) -> bool:
@@ -441,9 +466,9 @@ def simulate_pnl(ticker: str, amount: float, inv_date: str) -> dict | None:
         start = datetime.strptime(inv_date, "%Y-%m-%d")
         end   = datetime.now()
 
-        # ★ FIX: use auto_adjust=False + clean_yf_df, then safe_series
+        # Use Ticker().history() to avoid yf.download() MultiIndex issues
         raw_hist = clean_yf_df(
-            yf.download(ticker, start=start, end=end, progress=False, auto_adjust=True))
+            yf.Ticker(ticker).history(start=start, end=end))
         if raw_hist.empty or len(raw_hist) < 2:
             return None
 
@@ -463,7 +488,7 @@ def simulate_pnl(ticker: str, amount: float, inv_date: str) -> dict | None:
         nifty_return = 0.0
         nifty_norm   = None
         raw_nifty = clean_yf_df(
-            yf.download("^NSEI", start=start, end=end, progress=False, auto_adjust=True))
+            yf.Ticker("^NSEI").history(start=start, end=end))
         if not raw_nifty.empty:
             nifty_close  = safe_series(raw_nifty, "Close")
             n_start      = float(nifty_close.iloc[0])
