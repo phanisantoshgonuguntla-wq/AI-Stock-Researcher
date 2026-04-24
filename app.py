@@ -377,45 +377,162 @@ def get_technical_summary(hist: pd.DataFrame) -> dict:
 
 
 # ── TICKER RESOLVER ───────────────────────────────────────────────────────────
+# ── LOCAL TICKER DICTIONARY (no API call needed) ─────────────────────────────
+TICKER_MAP = {
+    # Large caps & Nifty 50
+    "reliance":"RELIANCE","reliance industries":"RELIANCE",
+    "tcs":"TCS","tata consultancy":"TCS","tata consultancy services":"TCS",
+    "infosys":"INFY","infy":"INFY",
+    "hdfc bank":"HDFCBANK","hdfcbank":"HDFCBANK","hdfc":"HDFCBANK",
+    "icici bank":"ICICIBANK","icicibank":"ICICIBANK","icici":"ICICIBANK",
+    "kotak":"KOTAKBANK","kotak mahindra":"KOTAKBANK","kotakbank":"KOTAKBANK",
+    "axis bank":"AXISBANK","axisbank":"AXISBANK","axis":"AXISBANK",
+    "sbi":"SBIN","state bank":"SBIN","state bank of india":"SBIN",
+    "wipro":"WIPRO",
+    "hcl":"HCLTECH","hcl tech":"HCLTECH","hcltech":"HCLTECH",
+    "tech mahindra":"TECHM","techm":"TECHM",
+    "bharti airtel":"BHARTIARTL","airtel":"BHARTIARTL","bhartiartl":"BHARTIARTL",
+    "itc":"ITC",
+    "hindustan unilever":"HINDUNILVR","hul":"HINDUNILVR","hindunilvr":"HINDUNILVR",
+    "asian paints":"ASIANPAINT","asianpaint":"ASIANPAINT",
+    "maruti":"MARUTI","maruti suzuki":"MARUTI",
+    "bajaj finance":"BAJFINANCE","bajajfinance":"BAJFINANCE","bajfinance":"BAJFINANCE",
+    "bajaj finserv":"BAJAJFINSV","bajajfinsv":"BAJAJFINSV",
+    "bajaj auto":"BAJAJ-AUTO","bajaj-auto":"BAJAJ-AUTO",
+    "hero motocorp":"HEROMOTOCO","hero":"HEROMOTOCO","heromotoco":"HEROMOTOCO",
+    "eicher motors":"EICHERMOT","eichermot":"EICHERMOT",
+    "mahindra":"M&M","m&m":"M&M","mahindra and mahindra":"M&M",
+    "tata motors":"TATAMOTORS","tatamotors":"TATAMOTORS",
+    "tata steel":"TATASTEEL","tatasteel":"TATASTEEL",
+    "jsw steel":"JSWSTEEL","jswsteel":"JSWSTEEL",
+    "hindalco":"HINDALCO",
+    "ongc":"ONGC","oil and natural gas":"ONGC",
+    "ntpc":"NTPC",
+    "power grid":"POWERGRID","powergrid":"POWERGRID",
+    "coal india":"COALINDIA","coalindia":"COALINDIA",
+    "bpcl":"BPCL","bharat petroleum":"BPCL",
+    "ioc":"IOC","indian oil":"IOC",
+    "sun pharma":"SUNPHARMA","sunpharma":"SUNPHARMA","sun pharmaceutical":"SUNPHARMA",
+    "dr reddy":"DRREDDY","drreddy":"DRREDDY","dr reddys":"DRREDDY",
+    "cipla":"CIPLA",
+    "divis lab":"DIVISLAB","divislab":"DIVISLAB","divis":"DIVISLAB",
+    "apollo hospitals":"APOLLOHOSP","apollohosp":"APOLLOHOSP","apollo":"APOLLOHOSP",
+    "sbi life":"SBILIFE","sbilife":"SBILIFE",
+    "hdfc life":"HDFCLIFE","hdfclife":"HDFCLIFE",
+    "titan":"TITAN",
+    "nestle":"NESTLEIND","nestleind":"NESTLEIND","nestle india":"NESTLEIND",
+    "ultratech cement":"ULTRACEMCO","ultracemco":"ULTRACEMCO","ultratech":"ULTRACEMCO",
+    "grasim":"GRASIM",
+    "tata consumer":"TATACONSUM","tataconsum":"TATACONSUM",
+    "pidilite":"PIDILITIND","pidilitind":"PIDILITIND",
+    "dmart":"DMART","avenue supermarts":"DMART",
+    "britannia":"BRITANNIA",
+    "shree cement":"SHREECEM","shreecem":"SHREECEM",
+    "adani enterprises":"ADANIENT","adanient":"ADANIENT","adani":"ADANIENT",
+    "adani ports":"ADANIPORTS","adaniports":"ADANIPORTS",
+    # Mid caps
+    "zomato":"ZOMATO",
+    "swiggy":"SWIGGY",
+    "paytm":"PAYTM","one97":"PAYTM",
+    "nykaa":"NYKAA","fss":"NYKAA",
+    "policybazaar":"POLICYBZR","policybzr":"POLICYBZR",
+    "ola electric":"OLAELEC","olaelec":"OLAELEC",
+    "indigo":"INDIGO","interglobe":"INDIGO",
+    "spicejet":"SPICEJET",
+    "irctc":"IRCTC",
+    "mrf":"MRF",
+    "berger paints":"BERGEPAINT","bergepaint":"BERGEPAINT",
+    "havells":"HAVELLS",
+    "voltas":"VOLTAS",
+    "bhel":"BHEL",
+    "abb":"ABB",
+    "siemens":"SIEMENS",
+    "godrej consumer":"GODREJCP","godrejcp":"GODREJCP",
+    "marico":"MARICO",
+    "dabur":"DABUR",
+    "emami":"EMAMILTD",
+    "colgate":"COLPAL","colgate palmolive":"COLPAL",
+    "page industries":"PAGEIND","pageind":"PAGEIND",
+    "info edge":"NAUKRI","naukri":"NAUKRI",
+    "just dial":"JUSTDIAL",
+    "mphasis":"MPHASIS",
+    "persistent":"PERSISTENT","persistent systems":"PERSISTENT",
+    "ltimindtree":"LTIM","ltim":"LTIM",
+    "l&t technology":"LTTS","ltts":"LTTS",
+    "coforge":"COFORGE",
+    "zensar":"ZENSARTECH",
+    "tata power":"TATAPOWER","tatapower":"TATAPOWER",
+    "torrent power":"TORNTPOWER","torntpower":"TORNTPOWER",
+    "indraprastha gas":"IGL","igl":"IGL",
+    "mahanagar gas":"MGL","mgl":"MGL",
+    "petronet":"PETRONET","petronet lng":"PETRONET",
+    "max healthcare":"MAXHEALTH","maxhealth":"MAXHEALTH",
+    "fortis":"FORTIS","fortis healthcare":"FORTIS",
+    "alkem":"ALKEM","alkem laboratories":"ALKEM",
+    "torrent pharma":"TORNTPHARM","torntpharm":"TORNTPHARM",
+    "aurobindo":"AUROPHARMA","auropharma":"AUROPHARMA",
+    "laurus labs":"LAURUSLABS","lauruslabs":"LAURUSLABS",
+    "srf":"SRF",
+    "atul":"ATUL",
+    "pi industries":"PIIND","piind":"PIIND",
+    "united spirits":"MCDOWELL-N","diageo":"MCDOWELL-N",
+    "united breweries":"UBL","ubl":"UBL",
+    "varun beverages":"VBL","vbl":"VBL",
+}
+
 def resolve_ticker(company_name: str, exchange: str = "NSE") -> str | None:
     suffix = ".NS" if exchange == "NSE" else ".BO"
-    prompt = f"""You are a stock ticker database for Indian stock markets.
-Task: Find the exact NSE/BSE ticker symbol for the company below.
-Company: {company_name}
-Exchange: {exchange}
-Required suffix: {suffix}
-Rules:
-- Reply with ONLY the complete ticker symbol including the suffix
-- Do not truncate or shorten the ticker
-- Do not add any explanation or extra text
-Examples: WIPRO.NS RELIANCE.NS HDFCBANK.NS TCS.NS INFY.NS SBIN.NS ZOMATO.NS
-If truly unknown reply: UNKNOWN
-Complete ticker symbol for {company_name}:"""
+    key = company_name.strip().lower()
+
+    # 1. Direct dictionary lookup
+    base = TICKER_MAP.get(key)
+    if base:
+        return base + suffix
+
+    # 2. Partial match — find any key that contains all words from input
+    words = [w for w in key.split() if len(w) > 2]
+    if words:
+        for map_key, map_val in TICKER_MAP.items():
+            if all(w in map_key for w in words):
+                return map_val + suffix
+
+    # 3. Try the input directly as a ticker (user may have typed it)
+    candidate = key.upper().replace(" ", "")
+    test = yf.Ticker(candidate + suffix)
     try:
-        response = gemini_client.models.generate_content(
-            model=MODEL,
-            contents=prompt,
-            config=genai_types.GenerateContentConfig(
-                max_output_tokens=200, temperature=0.0),
-        )
-        result = clean_ticker(response.text, suffix)
-        if result:
-            base = result.replace(".NS", "").replace(".BO", "")
-            if len(base) < 3:
-                retry = gemini_client.models.generate_content(
-                    model=MODEL,
-                    contents=(
-                        f"Write the FULL NSE ticker for {company_name} ending in "
-                        f"{suffix}. Example: Wipro = WIPRO.NS. Just the ticker:"
-                    ),
-                    config=genai_types.GenerateContentConfig(
-                        max_output_tokens=200, temperature=0.0),
-                )
-                result = clean_ticker(retry.text, suffix)
-        return result
-    except Exception as e:
-        st.warning(f"Ticker lookup error: {e}")
-        return None
+        h = test.history(period="1d")
+        if not h.empty:
+            return candidate + suffix
+    except Exception:
+        pass
+
+    # 4. Last resort — Gemini (with retry on 503)
+    prompt = (
+        f"Indian stock market NSE/BSE ticker for: {company_name}\n"
+        f"Reply with ONLY the ticker symbol ending in {suffix}. "
+        f"Examples: WIPRO.NS TCS.NS RELIANCE.NS\n"
+        f"If unknown reply: UNKNOWN"
+    )
+    for attempt in range(3):
+        try:
+            response = gemini_client.models.generate_content(
+                model=MODEL,
+                contents=prompt,
+                config=genai_types.GenerateContentConfig(
+                    max_output_tokens=50, temperature=0.0),
+            )
+            result = clean_ticker(response.text, suffix)
+            if result and result != "UNKNOWN":
+                return result
+            break
+        except Exception as e:
+            msg = str(e)
+            if "503" in msg and attempt < 2:
+                import time; time.sleep(2 ** attempt)
+                continue
+            st.warning(f"AI ticker lookup failed: {msg}. Try typing the ticker directly e.g. TCS.NS")
+            break
+    return None
 
 
 # ── STOCK DATA ────────────────────────────────────────────────────────────────
