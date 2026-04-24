@@ -45,16 +45,16 @@ def save_wishlist(wishlist: list[dict]):
 
 
 # ── SESSION STATE INIT ────────────────────────────────────────────────────────
-if "wishlist"       not in st.session_state:
-    st.session_state.wishlist       = load_wishlist()
-if "last_analysis"  not in st.session_state:
-    st.session_state.last_analysis  = None
-if "auto_ticker"    not in st.session_state:
-    st.session_state.auto_ticker    = None
-if "auto_name"      not in st.session_state:
-    st.session_state.auto_name      = None
-if "chat_history"   not in st.session_state:
-    st.session_state.chat_history   = []
+if "wishlist"      not in st.session_state:
+    st.session_state.wishlist      = load_wishlist()
+if "last_analysis" not in st.session_state:
+    st.session_state.last_analysis = None
+if "auto_ticker"   not in st.session_state:
+    st.session_state.auto_ticker   = None
+if "auto_name"     not in st.session_state:
+    st.session_state.auto_name     = None
+if "chat_history"  not in st.session_state:
+    st.session_state.chat_history  = []
 
 
 # ── AUTO-DETECT BEST MODEL ────────────────────────────────────────────────────
@@ -108,6 +108,7 @@ def clean_ticker(raw: str, suffix: str) -> str | None:
         result = result.split()[0] + suffix
     return result
 
+
 def clean_yf_df(df: pd.DataFrame) -> pd.DataFrame:
     """Flatten MultiIndex columns from yfinance and remove duplicates."""
     if isinstance(df.columns, pd.MultiIndex):
@@ -132,10 +133,9 @@ def add_to_wishlist(name: str, ticker: str, price: float) -> bool:
 
 # ── TECHNICAL INDICATORS ──────────────────────────────────────────────────────
 def calculate_rsi(prices, period: int = 14):
-    """Calculate RSI using Exponential Moving Average method."""
-    delta  = prices.diff()
-    gain   = delta.where(delta > 0, 0.0)
-    loss   = -delta.where(delta < 0, 0.0)
+    delta    = prices.diff()
+    gain     = delta.where(delta > 0, 0.0)
+    loss     = -delta.where(delta < 0, 0.0)
     avg_gain = gain.ewm(com=period - 1, min_periods=period).mean()
     avg_loss = loss.ewm(com=period - 1, min_periods=period).mean()
     rs  = avg_gain / avg_loss
@@ -144,38 +144,29 @@ def calculate_rsi(prices, period: int = 14):
 
 
 def calculate_macd(prices, fast: int = 12, slow: int = 26, signal: int = 9):
-    """Calculate MACD, Signal line, and Histogram."""
-    ema_fast   = prices.ewm(span=fast,   adjust=False).mean()
-    ema_slow   = prices.ewm(span=slow,   adjust=False).mean()
-    macd_line  = ema_fast - ema_slow
+    ema_fast    = prices.ewm(span=fast,   adjust=False).mean()
+    ema_slow    = prices.ewm(span=slow,   adjust=False).mean()
+    macd_line   = ema_fast - ema_slow
     signal_line = macd_line.ewm(span=signal, adjust=False).mean()
-    histogram  = macd_line - signal_line
+    histogram   = macd_line - signal_line
     return macd_line, signal_line, histogram
 
 
 def calculate_bollinger(prices, period: int = 20, std_dev: float = 2.0):
-    """Calculate Bollinger Bands."""
-    sma    = prices.rolling(period).mean()
-    std    = prices.rolling(period).std()
-    upper  = sma + std_dev * std
-    lower  = sma - std_dev * std
+    sma   = prices.rolling(period).mean()
+    std   = prices.rolling(period).std()
+    upper = sma + std_dev * std
+    lower = sma - std_dev * std
     return upper, sma, lower
 
 
 # ── CANDLESTICK + INDICATORS CHART ───────────────────────────────────────────
 def build_chart(hist, ticker: str) -> go.Figure:
-    """
-    Build a 4-panel interactive Plotly chart:
-    Panel 1 — Candlestick + Bollinger Bands + SMA 20/50
-    Panel 2 — Volume bars
-    Panel 3 — RSI with overbought/oversold lines
-    Panel 4 — MACD with signal and histogram
-    """
-    close  = hist["Close"]
-    rsi    = calculate_rsi(close)
+    close = hist["Close"].squeeze()
+    rsi   = calculate_rsi(close)
     macd_line, signal_line, histogram = calculate_macd(close)
     bb_upper, bb_mid, bb_lower        = calculate_bollinger(close)
-    sma50  = close.rolling(50).mean()
+    sma50 = close.rolling(50).mean()
 
     fig = make_subplots(
         rows=4, cols=1,
@@ -190,17 +181,18 @@ def build_chart(hist, ticker: str) -> go.Figure:
         ),
     )
 
-    # ── Panel 1: Candlestick ─────────────────────────────────────────────────
+    # Panel 1: Candlestick
     fig.add_trace(go.Candlestick(
         x=hist.index,
-        open=hist["Open"], high=hist["High"],
-        low=hist["Low"],   close=close,
+        open=hist["Open"].squeeze(),
+        high=hist["High"].squeeze(),
+        low=hist["Low"].squeeze(),
+        close=close,
         name="Price",
         increasing_line_color="#26a69a",
         decreasing_line_color="#ef5350",
     ), row=1, col=1)
 
-    # Bollinger Bands
     fig.add_trace(go.Scatter(
         x=hist.index, y=bb_upper,
         line=dict(color="rgba(100,100,255,0.4)", width=1, dash="dot"),
@@ -217,8 +209,6 @@ def build_chart(hist, ticker: str) -> go.Figure:
         line=dict(color="rgba(100,100,255,0.6)", width=1),
         name="BB Mid", showlegend=False,
     ), row=1, col=1)
-
-    # SMA 20 and SMA 50
     fig.add_trace(go.Scatter(
         x=hist.index, y=close.rolling(20).mean(),
         line=dict(color="#f39c12", width=1.5),
@@ -230,25 +220,24 @@ def build_chart(hist, ticker: str) -> go.Figure:
         name="SMA 50",
     ), row=1, col=1)
 
-    # ── Panel 2: Volume ──────────────────────────────────────────────────────
+    # Panel 2: Volume
     colors = [
-        "#26a69a" if close.iloc[i] >= hist["Open"].iloc[i]
+        "#26a69a" if float(close.iloc[i]) >= float(hist["Open"].squeeze().iloc[i])
         else "#ef5350"
         for i in range(len(close))
     ]
     fig.add_trace(go.Bar(
-        x=hist.index, y=hist["Volume"],
+        x=hist.index, y=hist["Volume"].squeeze(),
         marker_color=colors,
         name="Volume", showlegend=False,
     ), row=2, col=1)
 
-    # ── Panel 3: RSI ─────────────────────────────────────────────────────────
+    # Panel 3: RSI
     fig.add_trace(go.Scatter(
         x=hist.index, y=rsi,
         line=dict(color="#e67e22", width=1.5),
         name="RSI",
     ), row=3, col=1)
-    # Overbought / oversold reference lines
     for level, color in [(70, "rgba(239,83,80,0.5)"), (30, "rgba(38,166,154,0.5)")]:
         fig.add_hline(
             y=level, line_dash="dot",
@@ -256,11 +245,8 @@ def build_chart(hist, ticker: str) -> go.Figure:
             row=3, col=1,
         )
 
-    # ── Panel 4: MACD ────────────────────────────────────────────────────────
-    hist_colors = [
-        "#26a69a" if v >= 0 else "#ef5350"
-        for v in histogram
-    ]
+    # Panel 4: MACD
+    hist_colors = ["#26a69a" if v >= 0 else "#ef5350" for v in histogram]
     fig.add_trace(go.Bar(
         x=hist.index, y=histogram,
         marker_color=hist_colors,
@@ -277,7 +263,6 @@ def build_chart(hist, ticker: str) -> go.Figure:
         name="Signal",
     ), row=4, col=1)
 
-    # ── Layout ───────────────────────────────────────────────────────────────
     fig.update_layout(
         height=750,
         showlegend=True,
@@ -287,34 +272,26 @@ def build_chart(hist, ticker: str) -> go.Figure:
         paper_bgcolor="rgba(0,0,0,0)",
         plot_bgcolor="rgba(0,0,0,0)",
     )
-    fig.update_xaxes(
-        gridcolor="rgba(128,128,128,0.15)",
-        showgrid=True,
-    )
-    fig.update_yaxes(
-        gridcolor="rgba(128,128,128,0.15)",
-        showgrid=True,
-    )
+    fig.update_xaxes(gridcolor="rgba(128,128,128,0.15)", showgrid=True)
+    fig.update_yaxes(gridcolor="rgba(128,128,128,0.15)", showgrid=True)
     return fig
 
 
 # ── TECHNICAL SUMMARY FOR GEMINI ─────────────────────────────────────────────
 def get_technical_summary(hist) -> dict:
-    """Calculate all indicators and return a summary dict for Gemini."""
-    close  = hist["Close"]
-    rsi    = calculate_rsi(close)
+    close = hist["Close"].squeeze()
+    rsi   = calculate_rsi(close)
     macd_line, signal_line, histogram = calculate_macd(close)
     bb_upper, bb_mid, bb_lower        = calculate_bollinger(close)
 
-    last_rsi     = round(float(rsi.iloc[-1]), 2)
-    last_macd    = round(float(macd_line.iloc[-1]), 4)
-    last_signal  = round(float(signal_line.iloc[-1]), 4)
-    last_hist    = round(float(histogram.iloc[-1]), 4)
-    last_close   = round(float(close.iloc[-1]), 2)
-    last_bb_up   = round(float(bb_upper.iloc[-1]), 2)
-    last_bb_low  = round(float(bb_lower.iloc[-1]), 2)
+    last_rsi    = round(float(rsi.iloc[-1]), 2)
+    last_macd   = round(float(macd_line.iloc[-1]), 4)
+    last_signal = round(float(signal_line.iloc[-1]), 4)
+    last_hist   = round(float(histogram.iloc[-1]), 4)
+    last_close  = round(float(close.iloc[-1]), 2)
+    last_bb_up  = round(float(bb_upper.iloc[-1]), 2)
+    last_bb_low = round(float(bb_lower.iloc[-1]), 2)
 
-    # RSI interpretation
     if last_rsi > 70:
         rsi_signal = "Overbought — potential reversal or pullback risk"
     elif last_rsi < 30:
@@ -322,7 +299,6 @@ def get_technical_summary(hist) -> dict:
     else:
         rsi_signal = "Neutral zone"
 
-    # MACD interpretation
     if last_macd > last_signal and last_hist > 0:
         macd_signal = "Bullish — MACD above signal line, positive histogram"
     elif last_macd < last_signal and last_hist < 0:
@@ -330,23 +306,23 @@ def get_technical_summary(hist) -> dict:
     else:
         macd_signal = "Crossover zone — momentum changing"
 
-    # Bollinger interpretation
     if last_close > last_bb_up:
         bb_signal = "Price above upper band — overbought / strong breakout"
     elif last_close < last_bb_low:
         bb_signal = "Price below lower band — oversold / strong breakdown"
     else:
-        pct = round((last_close - last_bb_low) / (last_bb_up - last_bb_low) * 100, 1)
+        pct = round(
+            (last_close - last_bb_low) / (last_bb_up - last_bb_low) * 100, 1)
         bb_signal = f"Price within bands at {pct}% of band width"
 
     return {
-        "rsi":         last_rsi,
-        "rsi_signal":  rsi_signal,
-        "macd":        last_macd,
+        "rsi":        last_rsi,
+        "rsi_signal": rsi_signal,
+        "macd":       last_macd,
         "macd_signal": macd_signal,
-        "bb_upper":    last_bb_up,
-        "bb_lower":    last_bb_low,
-        "bb_signal":   bb_signal,
+        "bb_upper":   last_bb_up,
+        "bb_lower":   last_bb_low,
+        "bb_signal":  bb_signal,
     }
 
 
@@ -393,21 +369,21 @@ Complete ticker symbol for {company_name}:"""
 def fetch_stock_data(ticker: str) -> dict | None:
     try:
         asset = yf.Ticker(ticker)
-       hist = clean_yf_df(asset.history(period="6mo"))   # extended to 6mo for better indicators
+        hist  = clean_yf_df(asset.history(period="6mo"))  # ← fixed indentation
         if hist.empty:
             return None
-        close     = hist["Close"]
-        curr      = round(float(close.iloc[-1]), 2)
-        prev      = round(float(close.iloc[-2]), 2)
-        high_52w  = round(float(hist["High"].max()), 2)
-        low_52w   = round(float(hist["Low"].min()), 2)
-        sma20     = round(float(close.tail(20).mean()), 2)
-        sma50     = (round(float(close.tail(50).mean()), 2)
-                     if len(hist) >= 50 else None)
+        close      = hist["Close"].squeeze()
+        curr       = round(float(close.iloc[-1]), 2)
+        prev       = round(float(close.iloc[-2]), 2)
+        high_52w   = round(float(hist["High"].squeeze().max()), 2)
+        low_52w    = round(float(hist["Low"].squeeze().min()), 2)
+        sma20      = round(float(close.tail(20).mean()), 2)
+        sma50      = (round(float(close.tail(50).mean()), 2)
+                      if len(hist) >= 50 else None)
         change     = round(curr - prev, 2)
         change_pct = round((change / prev) * 100, 2)
-        avg_vol    = int(hist["Volume"].tail(20).mean())
-        last_vol   = int(hist["Volume"].iloc[-1])
+        avg_vol    = int(hist["Volume"].squeeze().tail(20).mean())
+        last_vol   = int(hist["Volume"].squeeze().iloc[-1])
         return {
             "ticker": ticker, "price": curr, "change": change,
             "change_pct": change_pct, "high_52w": high_52w,
@@ -421,42 +397,41 @@ def fetch_stock_data(ticker: str) -> dict | None:
 
 # ── HISTORICAL P&L SIMULATOR ──────────────────────────────────────────────────
 def simulate_pnl(ticker: str, amount: float, inv_date: str) -> dict | None:
-    """
-    Calculate what ₹amount invested on inv_date would be worth today.
-    Also compares against Nifty 50 over the same period.
-    """
     try:
         start = datetime.strptime(inv_date, "%Y-%m-%d")
         end   = datetime.now()
 
-        # ── Stock data ────────────────────────────────────────────────────────
-        raw_hist = clean_yf_df(yf.download(ticker, start=start, end=end, progress=False))
+        # Stock data
+        raw_hist = clean_yf_df(
+            yf.download(ticker, start=start, end=end, progress=False))
         if raw_hist.empty or len(raw_hist) < 2:
             return None
 
-        close       = raw_hist["Close"].squeeze()   # ensure 1D Series
-        buy_price   = float(close.iloc[0])
-        sell_price  = float(close.iloc[-1])
-        shares      = amount / buy_price
-        curr_value  = shares * sell_price
-        pnl         = curr_value - amount
-        pnl_pct     = (pnl / amount) * 100
-        days        = (end - start).days
-        years       = days / 365.25
-        cagr        = ((curr_value / amount) ** (1 / years) - 1) * 100 \
-                      if years > 0 else 0
+        close      = raw_hist["Close"].squeeze()
+        buy_price  = float(close.iloc[0])
+        sell_price = float(close.iloc[-1])
+        shares     = amount / buy_price
+        curr_value = shares * sell_price
+        pnl        = curr_value - amount
+        pnl_pct    = (pnl / amount) * 100
+        days       = (end - start).days
+        years      = days / 365.25
+        cagr       = ((curr_value / amount) ** (1 / years) - 1) * 100 \
+                     if years > 0 else 0
 
-        # ── Nifty 50 comparison ───────────────────────────────────────────────
-        raw_nifty = clean_yf_df(yf.download("^NSEI", start=start, end=end, progress=False))
-        nifty_return  = 0.0
-        nifty_norm    = None
+        # Nifty 50 comparison  ← fixed: if block restored
+        nifty_return = 0.0
+        nifty_norm   = None
+        raw_nifty = clean_yf_df(
+            yf.download("^NSEI", start=start, end=end, progress=False))
+        if not raw_nifty.empty:
             nifty_close  = raw_nifty["Close"].squeeze()
             n_start      = float(nifty_close.iloc[0])
             n_end        = float(nifty_close.iloc[-1])
             nifty_return = ((n_end - n_start) / n_start) * 100
             nifty_norm   = (nifty_close / nifty_close.iloc[0]) * amount
 
-        # ── Normalised growth chart ───────────────────────────────────────────
+        # Normalised growth chart
         stock_norm = (close / close.iloc[0]) * amount
 
         return {
@@ -499,16 +474,18 @@ def fetch_movers():
     for ticker in NIFTY50:
         try:
             hist = clean_yf_df(yf.Ticker(ticker).history(period="2d"))
-            if len(hist) >= 2:
-                curr = float(hist["Close"].iloc[-1])
-                prev = float(hist["Close"].iloc[-2])
-                chg  = round(((curr - prev) / prev) * 100, 2)
-                results.append({
-                    "ticker": ticker,
-                    "name":   ticker.replace(".NS", ""),
-                    "price":  round(curr, 2),
-                    "change": chg,
-                })
+            if hist.empty or len(hist) < 2:
+                continue
+            close = hist["Close"].squeeze()
+            curr  = float(close.iloc[-1])
+            prev  = float(close.iloc[-2])
+            chg   = round(((curr - prev) / prev) * 100, 2)
+            results.append({
+                "ticker": ticker,
+                "name":   ticker.replace(".NS", ""),
+                "price":  round(curr, 2),
+                "change": chg,
+            })
         except Exception:
             continue
     results.sort(key=lambda x: x["change"], reverse=True)
@@ -650,7 +627,6 @@ Under 300 words. Simple language. No generic disclaimers.
 
 # ── ASK AI ANYTHING ───────────────────────────────────────────────────────────
 def ask_ai(question: str, context: dict) -> str:
-    """Answer a follow-up question in the context of the current stock analysis."""
     data = context["data"]
     tech = context.get("tech", {})
     prompt = f"""You are an Indian stock market expert assistant.
@@ -692,7 +668,8 @@ def send_wishlist_email(to_email: str, wishlist: list[dict]) -> bool:
                 f"  Price when added : ₹{item['price']}\n"
                 f"  Added on         : {item['added']}"
             )
-        lines.append("\n\n" + "=" * 40 + "\nNot SEBI-registered financial advice.")
+        lines.append(
+            "\n\n" + "=" * 40 + "\nNot SEBI-registered financial advice.")
         msg            = MIMEMultipart()
         msg["From"]    = sender
         msg["To"]      = to_email
@@ -791,7 +768,6 @@ with tab_market:
 # ════════════════════════════════════════════════════════════════════════════════
 with tab_stocks:
 
-    # ── INPUT FORM ────────────────────────────────────────────────────────────
     st.subheader("🔍 Search a Stock")
     col1, col2 = st.columns([3, 1])
     with col1:
@@ -817,7 +793,6 @@ with tab_stocks:
                             use_container_width=True)
     st.divider()
 
-    # ── LOGIC ─────────────────────────────────────────────────────────────────
     do_analysis = False
     raw = ticker = ""
 
@@ -852,7 +827,8 @@ with tab_stocks:
             status.write(f"📊 Fetching price + indicators for `{ticker}`...")
             data = fetch_stock_data(ticker)
             if not data:
-                st.error(f"No data for `{ticker}`. May be delisted or wrong symbol.")
+                st.error(
+                    f"No data for `{ticker}`. May be delisted or wrong symbol.")
                 st.stop()
 
             status.write("📐 Calculating RSI, MACD, Bollinger Bands...")
@@ -863,7 +839,8 @@ with tab_stocks:
             status.write(f"   → {len(news_items)} headline(s) found")
 
             status.write("🤖 Running AI analysis with all indicators...")
-            analysis = get_gemini_analysis(raw, data, tech, news_items, buy_price)
+            analysis = get_gemini_analysis(
+                raw, data, tech, news_items, buy_price)
             status.update(label="Done!", state="complete", expanded=False)
 
         st.session_state.last_analysis = {
@@ -875,10 +852,8 @@ with tab_stocks:
             "analysis":   analysis,
             "buy_price":  buy_price,
         }
-        # Reset chat when new stock is analysed
         st.session_state.chat_history = []
 
-    # ── DISPLAY ───────────────────────────────────────────────────────────────
     if st.session_state.last_analysis:
         la   = st.session_state.last_analysis
         d    = la["data"]
@@ -886,7 +861,6 @@ with tab_stocks:
 
         st.subheader(f"📌 {la['raw'].title()}  ({la['ticker']})")
 
-        # Price metrics
         c1, c2, c3, c4 = st.columns(4)
         c1.metric("Price",     f"₹{d['price']}",
                   f"₹{d['change']} ({d['change_pct']}%)")
@@ -896,7 +870,6 @@ with tab_stocks:
                   delta=f"50d ₹{d['sma50']}" if d["sma50"] else "50d N/A",
                   delta_color="off")
 
-        # Indicator metrics
         i1, i2, i3 = st.columns(3)
         rsi_color = (
             "inverse" if tech["rsi"] > 70
@@ -907,21 +880,22 @@ with tab_stocks:
                   tech["rsi_signal"].split("—")[0].strip(),
                   delta_color=rsi_color)
         macd_delta_color = (
-            "normal" if "Bullish" in tech["macd_signal"]
+            "normal"  if "Bullish" in tech["macd_signal"]
             else "inverse" if "Bearish" in tech["macd_signal"]
             else "off"
         )
-        i2.metric("MACD Signal",
-                  "Bullish" if "Bullish" in tech["macd_signal"]
-                  else "Bearish" if "Bearish" in tech["macd_signal"]
-                  else "Neutral",
-                  delta_color=macd_delta_color)
+        i2.metric(
+            "MACD Signal",
+            "Bullish" if "Bullish" in tech["macd_signal"]
+            else "Bearish" if "Bearish" in tech["macd_signal"]
+            else "Neutral",
+            delta_color=macd_delta_color,
+        )
         i3.metric("Bollinger",
                   f"₹{tech['bb_lower']} – ₹{tech['bb_upper']}",
                   tech["bb_signal"][:30],
                   delta_color="off")
 
-        # P&L for holders
         if la["buy_price"] > 0:
             pl     = round(d["price"] - la["buy_price"], 2)
             pl_pct = round((pl / la["buy_price"]) * 100, 2)
@@ -930,7 +904,6 @@ with tab_stocks:
             p1.metric("Buy Price",      f"₹{la['buy_price']:.2f}")
             p2.metric("Unrealised P&L", f"₹{pl:+.2f}", f"{pl_pct:+.2f}%")
 
-        # ── INTERACTIVE CHART ─────────────────────────────────────────────────
         st.subheader("📊 Interactive Chart")
         st.caption(
             "Candlestick + Bollinger Bands + SMA 20/50 | "
@@ -941,7 +914,6 @@ with tab_stocks:
 
         st.divider()
 
-        # Wishlist button
         already = any(
             w["ticker"] == la["ticker"] for w in st.session_state.wishlist)
         if already:
@@ -956,13 +928,13 @@ with tab_stocks:
         else:
             if st.button(f"⭐ Add {la['raw'].title()} to Wishlist",
                          type="primary", use_container_width=True):
-                if add_to_wishlist(la["raw"].title(), la["ticker"], d["price"]):
-                    st.success(f"✅ Added to wishlist!")
+                if add_to_wishlist(
+                        la["raw"].title(), la["ticker"], d["price"]):
+                    st.success("✅ Added to wishlist!")
                     st.rerun()
 
         st.divider()
 
-        # News
         st.subheader(f"📰 Headlines ({len(la['news_items'])} found)")
         if la["news_items"]:
             for item in la["news_items"]:
@@ -974,54 +946,51 @@ with tab_stocks:
                     if item["published"]:
                         st.caption(f"Published: {item['published']}")
         else:
-            st.info("No matching headlines today. Analysis based on price data only.")
+            st.info(
+                "No matching headlines today. "
+                "Analysis based on price data only."
+            )
 
-        # AI Analysis
         st.subheader("🤖 AI Analysis")
         st.markdown(la["analysis"])
 
         st.divider()
 
-        # ── ASK AI ANYTHING ───────────────────────────────────────────────────
         st.subheader("💬 Ask AI Anything")
         st.caption(
             f"Ask any follow-up question about {la['raw'].title()} "
             "or Indian markets in general."
         )
 
-        # Display chat history
         for msg in st.session_state.chat_history:
             with st.chat_message(msg["role"]):
                 st.markdown(msg["content"])
 
-        # Chat input
         if question := st.chat_input(
             f"Ask something about {la['raw'].title()}..."
         ):
-            # Add user message
-            st.session_state.chat_history.append({
-                "role": "user", "content": question})
+            st.session_state.chat_history.append(
+                {"role": "user", "content": question})
             with st.chat_message("user"):
                 st.markdown(question)
-
-            # Get AI response
             with st.chat_message("assistant"):
                 with st.spinner("Thinking..."):
                     answer = ask_ai(question, la)
                 st.markdown(answer)
-            st.session_state.chat_history.append({
-                "role": "assistant", "content": answer})
+            st.session_state.chat_history.append(
+                {"role": "assistant", "content": answer})
 
         st.divider()
         st.caption(
-            f"Generated {datetime.now().strftime('%d %b %Y, %I:%M %p')} IST  |  "
-            "Not SEBI-registered financial advice."
+            f"Generated {datetime.now().strftime('%d %b %Y, %I:%M %p')} IST"
+            "  |  Not SEBI-registered financial advice."
         )
 
     else:
         st.info(
             "Enter a company name above and click **Run Analysis ▶**\n\n"
-            "Or click **Analyse ▶** on any stock in the 🏠 Market Overview tab."
+            "Or click **Analyse ▶** on any stock in the "
+            "🏠 Market Overview tab."
         )
 
 
@@ -1062,7 +1031,6 @@ with tab_simulator:
         if not sim_company.strip():
             st.warning("Please enter a company name or ticker.")
         else:
-            # Resolve ticker
             raw_sim = sim_company.strip()
             if raw_sim.upper().endswith((".NS", ".BO")):
                 sim_ticker = raw_sim.upper()
@@ -1083,38 +1051,39 @@ with tab_simulator:
 
                 if not result:
                     st.error(
-                        "Could not fetch historical data for this stock "
-                        "and date. Try a different date or ticker."
+                        "Could not fetch historical data. "
+                        "Try a different date or ticker."
                     )
                 else:
                     st.subheader(
                         f"Results: ₹{sim_amount:,.0f} in "
-                        f"{raw_sim.title()} on {sim_date.strftime('%d %b %Y')}"
+                        f"{raw_sim.title()} on "
+                        f"{sim_date.strftime('%d %b %Y')}"
                     )
 
-                    # Key metrics
                     r1, r2, r3, r4 = st.columns(4)
                     r1.metric("Invested",      f"₹{result['invested']:,.2f}")
                     r2.metric("Current Value", f"₹{result['curr_value']:,.2f}",
                               f"₹{result['pnl']:+,.2f}")
                     r3.metric("Total Return",  f"{result['pnl_pct']:+.2f}%",
                               f"CAGR {result['cagr']:+.2f}%")
-                    r4.metric("Nifty 50 Return (same period)",
-                              f"{result['nifty_return']:+.2f}%",
-                              f"{'Beat' if result['pnl_pct'] > result['nifty_return'] else 'Lagged'} Nifty by "
-                              f"{abs(result['pnl_pct'] - result['nifty_return']):.2f}%",
-                              delta_color=(
-                                  "normal" if result['pnl_pct'] > result['nifty_return']
-                                  else "inverse"
-                              ))
+                    r4.metric(
+                        "Nifty 50 Return (same period)",
+                        f"{result['nifty_return']:+.2f}%",
+                        f"{'Beat' if result['pnl_pct'] > result['nifty_return'] else 'Lagged'}"
+                        f" Nifty by "
+                        f"{abs(result['pnl_pct'] - result['nifty_return']):.2f}%",
+                        delta_color=(
+                            "normal" if result['pnl_pct'] > result['nifty_return']
+                            else "inverse"
+                        ),
+                    )
 
-                    # Details
                     d1, d2, d3 = st.columns(3)
-                    d1.metric("Buy Price",   f"₹{result['buy_price']}")
+                    d1.metric("Buy Price",     f"₹{result['buy_price']}")
                     d2.metric("Current Price", f"₹{result['sell_price']}")
                     d3.metric("Shares Bought", f"{result['shares']}")
 
-                    # Growth chart
                     st.subheader("📈 Portfolio Growth vs Nifty 50")
                     fig_sim = go.Figure()
                     fig_sim.add_trace(go.Scatter(
@@ -1204,7 +1173,8 @@ with tab_wishlist:
             "1. Go to 📊 Stock Analysis tab\n"
             "2. Search and analyse any stock\n"
             "3. Click the ⭐ Add to Wishlist button\n\n"
-            "Or click **Analyse ▶** on any stock in the 🏠 Market Overview tab."
+            "Or click **Analyse ▶** on any stock in the "
+            "🏠 Market Overview tab."
         )
     else:
         st.caption(f"{len(st.session_state.wishlist)} stock(s) saved")
@@ -1219,17 +1189,23 @@ with tab_wishlist:
                 st.metric("Price when added", f"₹{item['price']}")
             with col_c:
                 try:
-                    live_hist = clean_yf_df(yf.Ticker(item["ticker"]).history(period="1d"))
+                    live_hist = clean_yf_df(
+                        yf.Ticker(item["ticker"]).history(period="1d"))
                     if not live_hist.empty:
-                        live      = round(float(live_hist["Close"].iloc[-1]), 2)
+                        live      = round(
+                            float(live_hist["Close"].squeeze().iloc[-1]), 2)
                         delta     = round(live - item["price"], 2)
-                        delta_pct = round((delta / item["price"]) * 100, 2)
-                        st.metric("Live Price", f"₹{live}",
-                                  f"₹{delta:+.2f} ({delta_pct:+.2f}%) since added")
+                        delta_pct = round(
+                            (delta / item["price"]) * 100, 2)
+                        st.metric(
+                            "Live Price", f"₹{live}",
+                            f"₹{delta:+.2f} ({delta_pct:+.2f}%) since added",
+                        )
                 except Exception:
                     st.caption("Live price unavailable")
             with col_d:
-                if st.button("🗑️", key=f"del_{i}", help="Remove from wishlist"):
+                if st.button("🗑️", key=f"del_{i}",
+                             help="Remove from wishlist"):
                     st.session_state.wishlist.pop(i)
                     save_wishlist(st.session_state.wishlist)
                     st.rerun()
@@ -1260,6 +1236,7 @@ with tab_wishlist:
                 )
             else:
                 with st.spinner("Sending..."):
-                    ok = send_wishlist_email(to_email, st.session_state.wishlist)
+                    ok = send_wishlist_email(
+                        to_email, st.session_state.wishlist)
                 if ok:
                     st.success(f"✅ Wishlist sent to {to_email}!")
