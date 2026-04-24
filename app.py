@@ -200,12 +200,15 @@ def calculate_bollinger(prices: pd.Series, period: int = 20, std_dev: float = 2.
 
 # ── CANDLESTICK + INDICATORS CHART ───────────────────────────────────────────
 def build_chart(hist: pd.DataFrame, ticker: str) -> go.Figure:
-    # ★ FIX: use safe_series instead of .squeeze() directly on df columns
-    close  = safe_series(hist, "Close")
-    open_  = safe_series(hist, "Open")
-    high   = safe_series(hist, "High")
-    low    = safe_series(hist, "Low")
-    volume = safe_series(hist, "Volume")
+    def _flat(col):
+        s = hist[col]
+        if isinstance(s, pd.DataFrame): s = s.iloc[:, 0]
+        return pd.Series(s.to_numpy().flatten().astype(float), index=hist.index[:len(s)])
+    close  = _flat("Close")
+    open_  = _flat("Open")
+    high   = _flat("High")
+    low    = _flat("Low")
+    volume = _flat("Volume")
 
     rsi                               = calculate_rsi(close)
     macd_line, signal_line, histogram = calculate_macd(close)
@@ -323,7 +326,9 @@ def build_chart(hist: pd.DataFrame, ticker: str) -> go.Figure:
 
 # ── TECHNICAL SUMMARY FOR GEMINI ─────────────────────────────────────────────
 def get_technical_summary(hist: pd.DataFrame) -> dict:
-    close = safe_series(hist, "Close")   # ★ FIX
+    raw_c = hist["Close"]
+    if isinstance(raw_c, pd.DataFrame): raw_c = raw_c.iloc[:, 0]
+    close = pd.Series(raw_c.to_numpy().flatten().astype(float), index=hist.index)
 
     rsi                               = calculate_rsi(close)
     macd_line, signal_line, histogram = calculate_macd(close)
@@ -416,17 +421,33 @@ Complete ticker symbol for {company_name}:"""
 # ── STOCK DATA ────────────────────────────────────────────────────────────────
 def fetch_stock_data(ticker: str) -> dict | None:
     try:
-        asset = yf.Ticker(ticker)
-        hist  = clean_yf_df(asset.history(period="6mo"))
+        asset    = yf.Ticker(ticker)
+        raw_hist = asset.history(period="6mo")
+
+        # DEBUG block - shows raw yfinance output in sidebar
+        with st.sidebar.expander("yfinance debug", expanded=False):
+            st.write("Raw columns:", raw_hist.columns.tolist())
+            st.write("Column type:", type(raw_hist.columns).__name__)
+            st.write("Shape:", raw_hist.shape)
+            if not raw_hist.empty:
+                st.write("Last row (raw):", raw_hist.tail(1))
+
+        hist = clean_yf_df(raw_hist)
         if hist.empty:
             return None
 
-        # ★ FIX: use safe_series throughout — no bare .squeeze() on df columns
-        close  = safe_series(hist, "Close")
-        open_  = safe_series(hist, "Open")
-        high   = safe_series(hist, "High")
-        low    = safe_series(hist, "Low")
-        volume = safe_series(hist, "Volume")
+        def extract(col):
+            s = hist[col]
+            if isinstance(s, pd.DataFrame):
+                s = s.iloc[:, 0]
+            arr = s.to_numpy().flatten().astype(float)
+            return pd.Series(arr, index=hist.index[:len(arr)])
+
+        close  = extract("Close")
+        open_  = extract("Open")
+        high   = extract("High")
+        low    = extract("Low")
+        volume = extract("Volume")
 
         curr       = round(float(close.iloc[-1]), 2)
         prev       = round(float(close.iloc[-2]), 2)
@@ -439,6 +460,13 @@ def fetch_stock_data(ticker: str) -> dict | None:
         change_pct = round((change / prev) * 100, 2)
         avg_vol    = int(volume.tail(20).mean())
         last_vol   = int(volume.iloc[-1])
+
+        hist = hist.copy()
+        hist["Close"]  = close.values
+        hist["Open"]   = open_.values
+        hist["High"]   = high.values
+        hist["Low"]    = low.values
+        hist["Volume"] = volume.values
 
         return {
             "ticker":     ticker,
@@ -454,7 +482,9 @@ def fetch_stock_data(ticker: str) -> dict | None:
             "hist":       hist,
         }
     except Exception as e:
+        import traceback
         st.error(f"Price fetch error: {e}")
+        st.code(traceback.format_exc())
         return None
 
 
@@ -470,7 +500,10 @@ def simulate_pnl(ticker: str, amount: float, inv_date: str) -> dict | None:
         if raw_hist.empty or len(raw_hist) < 2:
             return None
 
-        close      = safe_series(raw_hist, "Close")
+        raw_close = raw_hist["Close"]
+        if isinstance(raw_close, pd.DataFrame):
+            raw_close = raw_close.iloc[:, 0]
+        close = pd.Series(raw_close.to_numpy().flatten().astype(float), index=raw_hist.index)
         buy_price  = float(close.iloc[0])
         sell_price = float(close.iloc[-1])
         shares     = amount / buy_price
@@ -488,7 +521,10 @@ def simulate_pnl(ticker: str, amount: float, inv_date: str) -> dict | None:
         raw_nifty = clean_yf_df(
             yf.Ticker("^NSEI").history(start=start, end=end))
         if not raw_nifty.empty:
-            nifty_close  = safe_series(raw_nifty, "Close")
+            raw_nc = raw_nifty["Close"]
+            if isinstance(raw_nc, pd.DataFrame):
+                raw_nc = raw_nc.iloc[:, 0]
+            nifty_close = pd.Series(raw_nc.to_numpy().flatten().astype(float), index=raw_nifty.index)
             n_start      = float(nifty_close.iloc[0])
             n_end        = float(nifty_close.iloc[-1])
             nifty_return = ((n_end - n_start) / n_start) * 100
@@ -539,7 +575,10 @@ def fetch_movers():
             hist = clean_yf_df(yf.Ticker(ticker).history(period="2d"))
             if hist.empty or len(hist) < 2:
                 continue
-            close = safe_series(hist, "Close")   # ★ FIX
+            raw_close = hist["Close"]
+            if isinstance(raw_close, pd.DataFrame):
+                raw_close = raw_close.iloc[:, 0]
+            close = pd.Series(raw_close.to_numpy().flatten().astype(float), index=hist.index)
             curr  = float(close.iloc[-1])
             prev  = float(close.iloc[-2])
             chg   = round(((curr - prev) / prev) * 100, 2)
@@ -1256,7 +1295,7 @@ with tab_wishlist:
                         yf.Ticker(item["ticker"]).history(period="1d"))
                     if not live_hist.empty:
                         live      = round(
-                            float(safe_series(live_hist, "Close").iloc[-1]), 2)  # ★ FIX
+                            float(pd.Series(live_hist["Close"].to_numpy().flatten().astype(float)).iloc[-1]), 2)
                         delta     = round(live - item["price"], 2)
                         delta_pct = round(
                             (delta / item["price"]) * 100, 2)
