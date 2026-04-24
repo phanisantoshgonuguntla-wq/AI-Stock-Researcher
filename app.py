@@ -110,11 +110,29 @@ def clean_ticker(raw: str, suffix: str) -> str | None:
 
 
 def clean_yf_df(df: pd.DataFrame) -> pd.DataFrame:
-    """Flatten MultiIndex columns from yfinance and remove duplicates."""
+    """
+    Flatten MultiIndex columns from yfinance and remove duplicates.
+    Works for both yf.Ticker().history() and yf.download() outputs.
+    """
+    if df is None or df.empty:
+        return df
+    # Flatten MultiIndex — take the first level (OHLCV labels)
     if isinstance(df.columns, pd.MultiIndex):
         df.columns = df.columns.get_level_values(0)
+    # Remove duplicate column names (can happen after flatten)
     df = df.loc[:, ~df.columns.duplicated()]
     return df
+
+
+def safe_series(df: pd.DataFrame, col: str) -> pd.Series:
+    """
+    Safely extract a column from a DataFrame as a 1-D Series.
+    Handles cases where squeeze() would produce a scalar (single-row df).
+    """
+    s = df[col]
+    if isinstance(s, pd.DataFrame):
+        s = s.iloc[:, 0]
+    return s.squeeze() if hasattr(s, "squeeze") else s
 
 
 def add_to_wishlist(name: str, ticker: str, price: float) -> bool:
@@ -132,7 +150,7 @@ def add_to_wishlist(name: str, ticker: str, price: float) -> bool:
 
 
 # ── TECHNICAL INDICATORS ──────────────────────────────────────────────────────
-def calculate_rsi(prices, period: int = 14):
+def calculate_rsi(prices: pd.Series, period: int = 14) -> pd.Series:
     delta    = prices.diff()
     gain     = delta.where(delta > 0, 0.0)
     loss     = -delta.where(delta < 0, 0.0)
@@ -143,7 +161,7 @@ def calculate_rsi(prices, period: int = 14):
     return rsi
 
 
-def calculate_macd(prices, fast: int = 12, slow: int = 26, signal: int = 9):
+def calculate_macd(prices: pd.Series, fast: int = 12, slow: int = 26, signal: int = 9):
     ema_fast    = prices.ewm(span=fast,   adjust=False).mean()
     ema_slow    = prices.ewm(span=slow,   adjust=False).mean()
     macd_line   = ema_fast - ema_slow
@@ -152,7 +170,7 @@ def calculate_macd(prices, fast: int = 12, slow: int = 26, signal: int = 9):
     return macd_line, signal_line, histogram
 
 
-def calculate_bollinger(prices, period: int = 20, std_dev: float = 2.0):
+def calculate_bollinger(prices: pd.Series, period: int = 20, std_dev: float = 2.0):
     sma   = prices.rolling(period).mean()
     std   = prices.rolling(period).std()
     upper = sma + std_dev * std
@@ -161,9 +179,15 @@ def calculate_bollinger(prices, period: int = 20, std_dev: float = 2.0):
 
 
 # ── CANDLESTICK + INDICATORS CHART ───────────────────────────────────────────
-def build_chart(hist, ticker: str) -> go.Figure:
-    close = hist["Close"].squeeze()
-    rsi   = calculate_rsi(close)
+def build_chart(hist: pd.DataFrame, ticker: str) -> go.Figure:
+    # ★ FIX: use safe_series instead of .squeeze() directly on df columns
+    close  = safe_series(hist, "Close")
+    open_  = safe_series(hist, "Open")
+    high   = safe_series(hist, "High")
+    low    = safe_series(hist, "Low")
+    volume = safe_series(hist, "Volume")
+
+    rsi                               = calculate_rsi(close)
     macd_line, signal_line, histogram = calculate_macd(close)
     bb_upper, bb_mid, bb_lower        = calculate_bollinger(close)
     sma50 = close.rolling(50).mean()
@@ -184,9 +208,9 @@ def build_chart(hist, ticker: str) -> go.Figure:
     # Panel 1: Candlestick
     fig.add_trace(go.Candlestick(
         x=hist.index,
-        open=hist["Open"].squeeze(),
-        high=hist["High"].squeeze(),
-        low=hist["Low"].squeeze(),
+        open=open_,
+        high=high,
+        low=low,
         close=close,
         name="Price",
         increasing_line_color="#26a69a",
@@ -220,14 +244,14 @@ def build_chart(hist, ticker: str) -> go.Figure:
         name="SMA 50",
     ), row=1, col=1)
 
-    # Panel 2: Volume
+    # Panel 2: Volume — colour by up/down candle
     colors = [
-        "#26a69a" if float(close.iloc[i]) >= float(hist["Open"].squeeze().iloc[i])
+        "#26a69a" if float(close.iloc[i]) >= float(open_.iloc[i])
         else "#ef5350"
         for i in range(len(close))
     ]
     fig.add_trace(go.Bar(
-        x=hist.index, y=hist["Volume"].squeeze(),
+        x=hist.index, y=volume,
         marker_color=colors,
         name="Volume", showlegend=False,
     ), row=2, col=1)
@@ -278,9 +302,10 @@ def build_chart(hist, ticker: str) -> go.Figure:
 
 
 # ── TECHNICAL SUMMARY FOR GEMINI ─────────────────────────────────────────────
-def get_technical_summary(hist) -> dict:
-    close = hist["Close"].squeeze()
-    rsi   = calculate_rsi(close)
+def get_technical_summary(hist: pd.DataFrame) -> dict:
+    close = safe_series(hist, "Close")   # ★ FIX
+
+    rsi                               = calculate_rsi(close)
     macd_line, signal_line, histogram = calculate_macd(close)
     bb_upper, bb_mid, bb_lower        = calculate_bollinger(close)
 
@@ -316,13 +341,13 @@ def get_technical_summary(hist) -> dict:
         bb_signal = f"Price within bands at {pct}% of band width"
 
     return {
-        "rsi":        last_rsi,
-        "rsi_signal": rsi_signal,
-        "macd":       last_macd,
+        "rsi":         last_rsi,
+        "rsi_signal":  rsi_signal,
+        "macd":        last_macd,
         "macd_signal": macd_signal,
-        "bb_upper":   last_bb_up,
-        "bb_lower":   last_bb_low,
-        "bb_signal":  bb_signal,
+        "bb_upper":    last_bb_up,
+        "bb_lower":    last_bb_low,
+        "bb_signal":   bb_signal,
     }
 
 
@@ -369,26 +394,41 @@ Complete ticker symbol for {company_name}:"""
 def fetch_stock_data(ticker: str) -> dict | None:
     try:
         asset = yf.Ticker(ticker)
-        hist  = clean_yf_df(asset.history(period="6mo"))  # ← fixed indentation
+        hist  = clean_yf_df(asset.history(period="6mo"))
         if hist.empty:
             return None
-        close      = hist["Close"].squeeze()
+
+        # ★ FIX: use safe_series throughout — no bare .squeeze() on df columns
+        close  = safe_series(hist, "Close")
+        open_  = safe_series(hist, "Open")
+        high   = safe_series(hist, "High")
+        low    = safe_series(hist, "Low")
+        volume = safe_series(hist, "Volume")
+
         curr       = round(float(close.iloc[-1]), 2)
         prev       = round(float(close.iloc[-2]), 2)
-        high_52w   = round(float(hist["High"].squeeze().max()), 2)
-        low_52w    = round(float(hist["Low"].squeeze().min()), 2)
+        high_52w   = round(float(high.max()), 2)
+        low_52w    = round(float(low.min()), 2)
         sma20      = round(float(close.tail(20).mean()), 2)
         sma50      = (round(float(close.tail(50).mean()), 2)
                       if len(hist) >= 50 else None)
         change     = round(curr - prev, 2)
         change_pct = round((change / prev) * 100, 2)
-        avg_vol    = int(hist["Volume"].squeeze().tail(20).mean())
-        last_vol   = int(hist["Volume"].squeeze().iloc[-1])
+        avg_vol    = int(volume.tail(20).mean())
+        last_vol   = int(volume.iloc[-1])
+
         return {
-            "ticker": ticker, "price": curr, "change": change,
-            "change_pct": change_pct, "high_52w": high_52w,
-            "low_52w": low_52w, "sma20": sma20, "sma50": sma50,
-            "avg_vol": avg_vol, "last_vol": last_vol, "hist": hist,
+            "ticker":     ticker,
+            "price":      curr,
+            "change":     change,
+            "change_pct": change_pct,
+            "high_52w":   high_52w,
+            "low_52w":    low_52w,
+            "sma20":      sma20,
+            "sma50":      sma50,
+            "avg_vol":    avg_vol,
+            "last_vol":   last_vol,
+            "hist":       hist,
         }
     except Exception as e:
         st.error(f"Price fetch error: {e}")
@@ -401,13 +441,13 @@ def simulate_pnl(ticker: str, amount: float, inv_date: str) -> dict | None:
         start = datetime.strptime(inv_date, "%Y-%m-%d")
         end   = datetime.now()
 
-        # Stock data
+        # ★ FIX: use auto_adjust=False + clean_yf_df, then safe_series
         raw_hist = clean_yf_df(
-            yf.download(ticker, start=start, end=end, progress=False))
+            yf.download(ticker, start=start, end=end, progress=False, auto_adjust=True))
         if raw_hist.empty or len(raw_hist) < 2:
             return None
 
-        close      = raw_hist["Close"].squeeze()
+        close      = safe_series(raw_hist, "Close")
         buy_price  = float(close.iloc[0])
         sell_price = float(close.iloc[-1])
         shares     = amount / buy_price
@@ -419,13 +459,13 @@ def simulate_pnl(ticker: str, amount: float, inv_date: str) -> dict | None:
         cagr       = ((curr_value / amount) ** (1 / years) - 1) * 100 \
                      if years > 0 else 0
 
-        # Nifty 50 comparison  ← fixed: if block restored
+        # Nifty 50 comparison
         nifty_return = 0.0
         nifty_norm   = None
         raw_nifty = clean_yf_df(
-            yf.download("^NSEI", start=start, end=end, progress=False))
+            yf.download("^NSEI", start=start, end=end, progress=False, auto_adjust=True))
         if not raw_nifty.empty:
-            nifty_close  = raw_nifty["Close"].squeeze()
+            nifty_close  = safe_series(raw_nifty, "Close")
             n_start      = float(nifty_close.iloc[0])
             n_end        = float(nifty_close.iloc[-1])
             nifty_return = ((n_end - n_start) / n_start) * 100
@@ -476,7 +516,7 @@ def fetch_movers():
             hist = clean_yf_df(yf.Ticker(ticker).history(period="2d"))
             if hist.empty or len(hist) < 2:
                 continue
-            close = hist["Close"].squeeze()
+            close = safe_series(hist, "Close")   # ★ FIX
             curr  = float(close.iloc[-1])
             prev  = float(close.iloc[-2])
             chg   = round(((curr - prev) / prev) * 100, 2)
@@ -1193,7 +1233,7 @@ with tab_wishlist:
                         yf.Ticker(item["ticker"]).history(period="1d"))
                     if not live_hist.empty:
                         live      = round(
-                            float(live_hist["Close"].squeeze().iloc[-1]), 2)
+                            float(safe_series(live_hist, "Close").iloc[-1]), 2)  # ★ FIX
                         delta     = round(live - item["price"], 2)
                         delta_pct = round(
                             (delta / item["price"]) * 100, 2)
