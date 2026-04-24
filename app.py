@@ -108,6 +108,13 @@ def clean_ticker(raw: str, suffix: str) -> str | None:
         result = result.split()[0] + suffix
     return result
 
+def clean_yf_df(df: pd.DataFrame) -> pd.DataFrame:
+    """Flatten MultiIndex columns from yfinance and remove duplicates."""
+    if isinstance(df.columns, pd.MultiIndex):
+        df.columns = df.columns.get_level_values(0)
+    df = df.loc[:, ~df.columns.duplicated()]
+    return df
+
 
 def add_to_wishlist(name: str, ticker: str, price: float) -> bool:
     already = any(w["ticker"] == ticker for w in st.session_state.wishlist)
@@ -386,7 +393,7 @@ Complete ticker symbol for {company_name}:"""
 def fetch_stock_data(ticker: str) -> dict | None:
     try:
         asset = yf.Ticker(ticker)
-        hist  = asset.history(period="6mo")   # extended to 6mo for better indicators
+       hist = clean_yf_df(asset.history(period="6mo"))   # extended to 6mo for better indicators
         if hist.empty:
             return None
         close     = hist["Close"]
@@ -423,14 +430,9 @@ def simulate_pnl(ticker: str, amount: float, inv_date: str) -> dict | None:
         end   = datetime.now()
 
         # ── Stock data ────────────────────────────────────────────────────────
-        raw_hist = yf.download(ticker, start=start, end=end, progress=False)
+        raw_hist = clean_yf_df(yf.download(ticker, start=start, end=end, progress=False))
         if raw_hist.empty or len(raw_hist) < 2:
             return None
-
-        # Fix for yfinance MultiIndex columns (newer versions)
-        # Flatten MultiIndex if present so ["Close"] returns a plain Series
-        if isinstance(raw_hist.columns, pd.MultiIndex):
-            raw_hist.columns = raw_hist.columns.get_level_values(0)
 
         close       = raw_hist["Close"].squeeze()   # ensure 1D Series
         buy_price   = float(close.iloc[0])
@@ -445,13 +447,9 @@ def simulate_pnl(ticker: str, amount: float, inv_date: str) -> dict | None:
                       if years > 0 else 0
 
         # ── Nifty 50 comparison ───────────────────────────────────────────────
-        raw_nifty = yf.download("^NSEI", start=start, end=end, progress=False)
+        raw_nifty = clean_yf_df(yf.download("^NSEI", start=start, end=end, progress=False))
         nifty_return  = 0.0
         nifty_norm    = None
-
-        if not raw_nifty.empty:
-            if isinstance(raw_nifty.columns, pd.MultiIndex):
-                raw_nifty.columns = raw_nifty.columns.get_level_values(0)
             nifty_close  = raw_nifty["Close"].squeeze()
             n_start      = float(nifty_close.iloc[0])
             n_end        = float(nifty_close.iloc[-1])
@@ -500,7 +498,7 @@ def fetch_movers():
     results = []
     for ticker in NIFTY50:
         try:
-            hist = yf.Ticker(ticker).history(period="2d")
+            hist = clean_yf_df(yf.Ticker(ticker).history(period="2d"))
             if len(hist) >= 2:
                 curr = float(hist["Close"].iloc[-1])
                 prev = float(hist["Close"].iloc[-2])
@@ -1221,7 +1219,7 @@ with tab_wishlist:
                 st.metric("Price when added", f"₹{item['price']}")
             with col_c:
                 try:
-                    live_hist = yf.Ticker(item["ticker"]).history(period="1d")
+                    live_hist = clean_yf_df(yf.Ticker(item["ticker"]).history(period="1d"))
                     if not live_hist.empty:
                         live      = round(float(live_hist["Close"].iloc[-1]), 2)
                         delta     = round(live - item["price"], 2)
