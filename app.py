@@ -118,7 +118,7 @@ def clean_yf_df(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
-# ── TICKERTAPE (kept for fundamentals attempt) ────────────────────────────────
+# ── TICKERTAPE ────────────────────────────────────────────────────────────────
 TICKERTAPE_HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
     "Accept": "application/json",
@@ -130,7 +130,6 @@ BASE = "https://api.tickertape.in"
 
 @st.cache_data(ttl=3600)
 def get_tickertape_sid(company_ticker: str) -> str | None:
-    """Convert NSE ticker like WIPRO to Tickertape's internal SID."""
     try:
         clean = company_ticker.replace(".NS", "").replace(".BO", "")
         r = requests.get(
@@ -158,7 +157,6 @@ def get_tickertape_sid(company_ticker: str) -> str | None:
 
 @st.cache_data(ttl=3600)
 def get_fundamentals(sid: str) -> dict:
-    """Get P/E, ROE, market cap and other ratios from Tickertape."""
     try:
         r = requests.get(
             f"{BASE}/stocks/{sid}/ratios/",
@@ -171,7 +169,6 @@ def get_fundamentals(sid: str) -> dict:
 
 @st.cache_data(ttl=3600)
 def get_peers(sid: str) -> list:
-    """Get peer comparison data from Tickertape."""
     try:
         r = requests.get(
             f"{BASE}/stocks/{sid}/peers/",
@@ -184,7 +181,6 @@ def get_peers(sid: str) -> list:
 
 @st.cache_data(ttl=3600)
 def get_shareholding(sid: str) -> dict:
-    """Get FII/DII/Promoter shareholding from Tickertape."""
     try:
         r = requests.get(
             f"{BASE}/stocks/{sid}/shareholding/",
@@ -197,10 +193,6 @@ def get_shareholding(sid: str) -> dict:
 
 # ── FUNDAMENTALS FALLBACK (yfinance) ─────────────────────────────────────────
 def get_fundamentals_yf(ticker: str) -> dict:
-    """
-    Fallback fundamentals from yfinance .info
-    Works for most Nifty 50 stocks.
-    """
     try:
         info = yf.Ticker(ticker).info
         if not info or len(info) < 5:
@@ -283,13 +275,8 @@ PEER_MAP = {
 
 @st.cache_data(ttl=1800)
 def get_peers_yf(ticker: str) -> list[dict]:
-    """
-    Fetch peer comparison using hardcoded peer map + yfinance.
-    Returns same structure as Tickertape so display code works unchanged.
-    """
     peer_tickers = PEER_MAP.get(ticker, [])
     if not peer_tickers:
-        # Partial match fallback for BSE or non-exact tickers
         base = ticker.replace(".NS", "").replace(".BO", "")
         for key in PEER_MAP:
             if base in key or key.replace(".NS", "") in base:
@@ -326,15 +313,11 @@ def get_peers_yf(ticker: str) -> list[dict]:
 
 
 # ── SHAREHOLDING (NSE India official data) ────────────────────────────────────
-@st.cache_data(ttl=86400)   # quarterly data — cache 24 hours
+@st.cache_data(ttl=86400)
 def get_shareholding_nse(ticker: str) -> dict:
-    """
-    Fetch shareholding pattern from NSE India's official public API.
-    No API key required — official government data.
-    """
     try:
-        symbol  = ticker.replace(".NS", "").replace(".BO", "")
-        url     = (
+        symbol = ticker.replace(".NS", "").replace(".BO", "")
+        url    = (
             f"https://www.nseindia.com/api/corporate-share-holdings-master"
             f"?symbol={symbol}&market=equities"
         )
@@ -342,16 +325,12 @@ def get_shareholding_nse(ticker: str) -> dict:
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
                           "AppleWebKit/537.36 (KHTML, like Gecko) "
                           "Chrome/120.0.0.0 Safari/537.36",
-            "Accept":         "application/json, text/plain, */*",
+            "Accept":          "application/json, text/plain, */*",
             "Accept-Language": "en-US,en;q=0.9",
-            "Referer":        "https://www.nseindia.com/",
+            "Referer":         "https://www.nseindia.com/",
         }
         session = requests.Session()
-        # NSE requires a valid session cookie — get homepage first
-        session.get(
-            "https://www.nseindia.com",
-            headers=headers, timeout=8,
-        )
+        session.get("https://www.nseindia.com", headers=headers, timeout=8)
         r = session.get(url, headers=headers, timeout=8)
         if r.status_code != 200:
             return {}
@@ -374,20 +353,7 @@ def get_shareholding_nse(ticker: str) -> dict:
         return {}
 
 
-def add_to_wishlist(name: str, ticker: str, price: float) -> bool:
-    already = any(w["ticker"] == ticker for w in st.session_state.wishlist)
-    if not already:
-        st.session_state.wishlist.append({
-            "name":   name,
-            "ticker": ticker,
-            "price":  price,
-            "added":  datetime.now().strftime("%d %b %Y %I:%M %p"),
-        })
-        save_wishlist(st.session_state.wishlist)
-        return True
-    return False
-
-
+# ── WISHLIST ──────────────────────────────────────────────────────────────────
 def add_to_wishlist(name: str, ticker: str, price: float) -> bool:
     already = any(w["ticker"] == ticker for w in st.session_state.wishlist)
     if not already:
@@ -712,7 +678,6 @@ def simulate_pnl(ticker: str, amount: float, inv_date: str) -> dict | None:
             "nifty_norm":   nifty_norm,
             "days":         days,
         }
-
     except Exception as e:
         st.error(f"Simulator error: {e}")
         return None
@@ -1108,19 +1073,16 @@ with tab_stocks:
             tt_peers        = get_peers(tt_sid)         if tt_sid else []
             tt_shareholding = get_shareholding(tt_sid)  if tt_sid else {}
 
-            # Fundamentals fallback → yfinance
             if not tt_fundamentals:
                 tt_fundamentals = get_fundamentals_yf(ticker)
                 if tt_fundamentals:
                     status.write("   → Fundamentals loaded from yfinance")
 
-            # Peers fallback → hardcoded map + yfinance
             if not tt_peers:
                 tt_peers = get_peers_yf(ticker)
                 if tt_peers:
                     status.write(f"   → {len(tt_peers)} peer(s) loaded")
 
-            # Shareholding → NSE India official API
             tt_shareholding = get_shareholding_nse(ticker)
             if tt_shareholding:
                 status.write("   → Shareholding pattern loaded from NSE")
@@ -1154,7 +1116,6 @@ with tab_stocks:
 
         st.subheader(f"📌 {la['raw'].title()}  ({la['ticker']})")
 
-        # Price metrics
         c1, c2, c3, c4 = st.columns(4)
         c1.metric("Price",     f"₹{d['price']}",
                   f"₹{d['change']} ({d['change_pct']}%)")
@@ -1164,7 +1125,6 @@ with tab_stocks:
                   delta=f"50d ₹{d['sma50']}" if d["sma50"] else "50d N/A",
                   delta_color="off")
 
-        # Indicator metrics
         i1, i2, i3 = st.columns(3)
         rsi_color = (
             "inverse" if tech["rsi"] > 70
@@ -1191,7 +1151,6 @@ with tab_stocks:
                   tech["bb_signal"][:30],
                   delta_color="off")
 
-        # P&L for holders
         if la["buy_price"] > 0:
             pl     = round(d["price"] - la["buy_price"], 2)
             pl_pct = round((pl / la["buy_price"]) * 100, 2)
@@ -1203,17 +1162,15 @@ with tab_stocks:
         # ── FUNDAMENTAL DATA PANEL ────────────────────────────────────────────
         if la.get("tt_fundamentals"):
             st.subheader("📋 Fundamental Data")
-            st.caption("Source: Tickertape — updated hourly")
+            st.caption("Source: yfinance / Tickertape")
             fd = la["tt_fundamentals"]
-
             f1, f2, f3, f4 = st.columns(4)
             f1.metric("P/E Ratio",      fd.get("pe",  "N/A"))
             f2.metric("P/B Ratio",      fd.get("pb",  "N/A"))
             f3.metric("ROE",
-                      f"{fd.get('roe', 'N/A')}%" if fd.get("roe") else "N/A")
+                      f"{fd.get('roe', 'N/A')}" if fd.get("roe") else "N/A")
             f4.metric("Dividend Yield",
-                      f"{fd.get('dy', 'N/A')}%"  if fd.get("dy")  else "N/A")
-
+                      f"{fd.get('dy', 'N/A')}"  if fd.get("dy")  else "N/A")
             f5, f6, f7, f8 = st.columns(4)
             f5.metric("Market Cap",     fd.get("mktcap", "N/A"))
             f6.metric("Debt/Equity",    fd.get("de",     "N/A"))
@@ -1224,7 +1181,7 @@ with tab_stocks:
         # ── PEER COMPARISON ───────────────────────────────────────────────────
         if la.get("tt_peers"):
             st.subheader("🔀 Peer Comparison")
-            st.caption("Source: Tickertape")
+            st.caption("Source: yfinance — sector peers")
             peer_rows = []
             for p in la["tt_peers"][:6]:
                 peer_rows.append({
@@ -1245,9 +1202,7 @@ with tab_stocks:
         # ── FII / DII SHAREHOLDING ────────────────────────────────────────────
         if la.get("tt_shareholding"):
             st.subheader("🏦 Shareholding Pattern")
-            st.caption("Source: Tickertape — latest available quarter")
             sh = la["tt_shareholding"]
-
             if isinstance(sh, list) and sh:
                 latest = sh[0]
             elif isinstance(sh, dict):
@@ -1256,20 +1211,21 @@ with tab_stocks:
                 latest = {}
 
             if latest:
+                quarter = latest.get("quarter", "")
+                st.caption(
+                    f"Source: NSE India official data"
+                    + (f" — {quarter}" if quarter else "")
+                )
                 s1, s2, s3, s4 = st.columns(4)
-                promoter = latest.get("promoter", latest.get("Promoter", "N/A"))
-                fii      = latest.get("fii",      latest.get("FII",      "N/A"))
-                dii      = latest.get("dii",      latest.get("DII",      "N/A"))
-                public   = latest.get("public",   latest.get("Public",   "N/A"))
+                promoter = latest.get("promoter", "N/A")
+                fii      = latest.get("fii",      "N/A")
+                dii      = latest.get("dii",      "N/A")
+                public   = latest.get("public",   "N/A")
 
-                s1.metric("Promoter",
-                          f"{promoter}%" if promoter != "N/A" else "N/A")
-                s2.metric("FII",
-                          f"{fii}%"      if fii      != "N/A" else "N/A")
-                s3.metric("DII",
-                          f"{dii}%"      if dii      != "N/A" else "N/A")
-                s4.metric("Public",
-                          f"{public}%"   if public   != "N/A" else "N/A")
+                s1.metric("Promoter", f"{promoter}%" if promoter != "N/A" else "N/A")
+                s2.metric("FII",      f"{fii}%"      if fii      != "N/A" else "N/A")
+                s3.metric("DII",      f"{dii}%"      if dii      != "N/A" else "N/A")
+                s4.metric("Public",   f"{public}%"   if public   != "N/A" else "N/A")
 
                 try:
                     labels = ["Promoter", "FII", "DII", "Public"]
@@ -1305,7 +1261,6 @@ with tab_stocks:
 
         st.divider()
 
-        # Wishlist button
         already = any(
             w["ticker"] == la["ticker"] for w in st.session_state.wishlist)
         if already:
@@ -1327,7 +1282,6 @@ with tab_stocks:
 
         st.divider()
 
-        # News
         st.subheader(f"📰 Headlines ({len(la['news_items'])} found)")
         if la["news_items"]:
             for item in la["news_items"]:
@@ -1344,13 +1298,11 @@ with tab_stocks:
                 "Analysis based on price data only."
             )
 
-        # AI Analysis
         st.subheader("🤖 AI Analysis")
         st.markdown(la["analysis"])
 
         st.divider()
 
-        # Ask AI Anything
         st.subheader("💬 Ask AI Anything")
         st.caption(
             f"Ask any follow-up question about {la['raw'].title()} "
