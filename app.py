@@ -13,6 +13,7 @@ from plotly.subplots import make_subplots
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from datetime import datetime, timedelta
+import requests
 
 # ── CONFIG ────────────────────────────────────────────────────────────────────
 st.set_page_config(page_title="AI Stock Advisor (India)", layout="wide", page_icon="📈")
@@ -115,6 +116,74 @@ def clean_yf_df(df: pd.DataFrame) -> pd.DataFrame:
         df.columns = df.columns.get_level_values(0)
     df = df.loc[:, ~df.columns.duplicated()]
     return df
+
+
+# ── TICKERTAPE (Fundamentals, Peers, Shareholding) ────────────────────────────
+TICKERTAPE_HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+    "Accept": "application/json",
+    "Origin": "https://www.tickertape.in",
+    "Referer": "https://www.tickertape.in/",
+}
+BASE = "https://api.tickertape.in"
+
+
+@st.cache_data(ttl=3600)   # cache for 1 hour — reduces block risk
+def get_tickertape_sid(company_ticker: str) -> str | None:
+    """Convert NSE ticker like WIPRO to Tickertape's internal SID."""
+    try:
+        # Strip .NS or .BO suffix before searching
+        clean = company_ticker.replace(".NS", "").replace(".BO", "")
+        r = requests.get(
+            f"{BASE}/search?text={clean}&type=stock",
+            headers=TICKERTAPE_HEADERS, timeout=5,
+        )
+        data    = r.json()
+        results = data.get("data", {}).get("stocks", [])
+        if results:
+            return results[0].get("sid")
+    except Exception:
+        pass
+    return None
+
+
+@st.cache_data(ttl=3600)
+def get_fundamentals(sid: str) -> dict:
+    """Get P/E, ROE, market cap and other ratios."""
+    try:
+        r = requests.get(
+            f"{BASE}/stocks/{sid}/ratios/",
+            headers=TICKERTAPE_HEADERS, timeout=5,
+        )
+        return r.json().get("data", {})
+    except Exception:
+        return {}
+
+
+@st.cache_data(ttl=3600)
+def get_peers(sid: str) -> list:
+    """Get peer comparison data."""
+    try:
+        r = requests.get(
+            f"{BASE}/stocks/{sid}/peers/",
+            headers=TICKERTAPE_HEADERS, timeout=5,
+        )
+        return r.json().get("data", [])
+    except Exception:
+        return []
+
+
+@st.cache_data(ttl=3600)
+def get_shareholding(sid: str) -> dict:
+    """Get FII/DII/Promoter shareholding pattern."""
+    try:
+        r = requests.get(
+            f"{BASE}/stocks/{sid}/shareholding/",
+            headers=TICKERTAPE_HEADERS, timeout=5,
+        )
+        return r.json().get("data", {})
+    except Exception:
+        return {}
 
 
 def add_to_wishlist(name: str, ticker: str, price: float) -> bool:
@@ -827,8 +896,7 @@ with tab_stocks:
             status.write(f"📊 Fetching price + indicators for `{ticker}`...")
             data = fetch_stock_data(ticker)
             if not data:
-                st.error(
-                    f"No data for `{ticker}`. May be delisted or wrong symbol.")
+                st.error(f"No data for `{ticker}`. May be delisted or wrong symbol.")
                 st.stop()
 
             status.write("📐 Calculating RSI, MACD, Bollinger Bands...")
@@ -838,19 +906,32 @@ with tab_stocks:
             news_items = fetch_news(raw)
             status.write(f"   → {len(news_items)} headline(s) found")
 
+            # ── Tickertape — fundamentals, peers, shareholding ────────────────
+            status.write("📋 Fetching fundamentals from Tickertape...")
+            tt_sid          = get_tickertape_sid(ticker)
+            tt_fundamentals = get_fundamentals(tt_sid)  if tt_sid else {}
+            tt_peers        = get_peers(tt_sid)          if tt_sid else []
+            tt_shareholding = get_shareholding(tt_sid)   if tt_sid else {}
+            if tt_sid:
+                status.write("   → Fundamentals, peers & shareholding loaded")
+            else:
+                status.write("   → Tickertape data unavailable, using price data only")
+
             status.write("🤖 Running AI analysis with all indicators...")
-            analysis = get_gemini_analysis(
-                raw, data, tech, news_items, buy_price)
+            analysis = get_gemini_analysis(raw, data, tech, news_items, buy_price)
             status.update(label="Done!", state="complete", expanded=False)
 
         st.session_state.last_analysis = {
-            "raw":        raw,
-            "ticker":     ticker,
-            "data":       data,
-            "tech":       tech,
-            "news_items": news_items,
-            "analysis":   analysis,
-            "buy_price":  buy_price,
+            "raw":            raw,
+            "ticker":         ticker,
+            "data":           data,
+            "tech":           tech,
+            "news_items":     news_items,
+            "analysis":       analysis,
+            "buy_price":      buy_price,
+            "tt_fundamentals": tt_fundamentals,
+            "tt_peers":        tt_peers,
+            "tt_shareholding": tt_shareholding,
         }
         st.session_state.chat_history = []
 
@@ -904,6 +985,99 @@ with tab_stocks:
             p1.metric("Buy Price",      f"₹{la['buy_price']:.2f}")
             p2.metric("Unrealised P&L", f"₹{pl:+.2f}", f"{pl_pct:+.2f}%")
 
+       # ── FUNDAMENTAL DATA PANEL ────────────────────────────────────────────
+        if la.get("tt_fundamentals"):
+            st.subheader("📋 Fundamental Data")
+            st.caption("Source: Tickertape — updated hourly")
+            fd = la["tt_fundamentals"]
+
+            f1, f2, f3, f4 = st.columns(4)
+            f1.metric("P/E Ratio",    fd.get("pe",  "N/A"))
+            f2.metric("P/B Ratio",    fd.get("pb",  "N/A"))
+            f3.metric("ROE",          f"{fd.get('roe', 'N/A')}%"
+                      if fd.get("roe") else "N/A")
+            f4.metric("Dividend Yield", f"{fd.get('dy', 'N/A')}%"
+                      if fd.get("dy") else "N/A")
+
+            f5, f6, f7, f8 = st.columns(4)
+            f5.metric("Market Cap",   fd.get("mktcap", "N/A"))
+            f6.metric("Debt/Equity",  fd.get("de",     "N/A"))
+            f7.metric("EPS",          fd.get("eps",    "N/A"))
+            f8.metric("Revenue Growth", fd.get("revg",  "N/A"))
+            st.divider()
+
+        # ── PEER COMPARISON ───────────────────────────────────────────────────
+        if la.get("tt_peers"):
+            st.subheader("🔀 Peer Comparison")
+            st.caption("Source: Tickertape")
+            peer_rows = []
+            for p in la["tt_peers"][:6]:   # show top 6 peers
+                peer_rows.append({
+                    "Company":   p.get("name",   ""),
+                    "Price":     f"₹{p.get('close', 'N/A')}",
+                    "Change %":  f"{p.get('change1d', 'N/A')}%",
+                    "P/E":       p.get("pe",     "N/A"),
+                    "Mkt Cap":   p.get("mktcap", "N/A"),
+                })
+            if peer_rows:
+                st.dataframe(
+                    peer_rows,
+                    use_container_width=True,
+                    hide_index=True,
+                )
+            st.divider()
+
+        # ── FII / DII SHAREHOLDING ────────────────────────────────────────────
+        if la.get("tt_shareholding"):
+            st.subheader("🏦 Shareholding Pattern")
+            st.caption("Source: Tickertape — latest available quarter")
+            sh = la["tt_shareholding"]
+
+            # Tickertape returns a list of quarters — take the latest
+            if isinstance(sh, list) and sh:
+                latest = sh[0]
+            elif isinstance(sh, dict):
+                latest = sh
+            else:
+                latest = {}
+
+            if latest:
+                s1, s2, s3, s4 = st.columns(4)
+                promoter = latest.get("promoter", latest.get("Promoter", "N/A"))
+                fii      = latest.get("fii",      latest.get("FII",      "N/A"))
+                dii      = latest.get("dii",      latest.get("DII",      "N/A"))
+                public   = latest.get("public",   latest.get("Public",   "N/A"))
+
+                s1.metric("Promoter",  f"{promoter}%" if promoter != "N/A" else "N/A")
+                s2.metric("FII",       f"{fii}%"      if fii      != "N/A" else "N/A")
+                s3.metric("DII",       f"{dii}%"      if dii      != "N/A" else "N/A")
+                s4.metric("Public",    f"{public}%"   if public   != "N/A" else "N/A")
+
+                # Pie chart
+                try:
+                    labels = ["Promoter", "FII", "DII", "Public"]
+                    values = [
+                        float(promoter), float(fii),
+                        float(dii),      float(public),
+                    ]
+                    fig_pie = go.Figure(go.Pie(
+                        labels=labels, values=values,
+                        hole=0.4,
+                        marker_colors=[
+                            "#3498db", "#e74c3c", "#2ecc71", "#f39c12"],
+                    ))
+                    fig_pie.update_layout(
+                        height=300,
+                        margin=dict(l=0, r=0, t=20, b=0),
+                        paper_bgcolor="rgba(0,0,0,0)",
+                        showlegend=True,
+                    )
+                    st.plotly_chart(fig_pie, use_container_width=True)
+                except Exception:
+                    pass   # if values aren't numeric, skip chart silently
+            st.divider()
+
+        # ── INTERACTIVE CHART ─────────────────────────────────────────────────
         st.subheader("📊 Interactive Chart")
         st.caption(
             "Candlestick + Bollinger Bands + SMA 20/50 | "
