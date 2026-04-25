@@ -137,12 +137,16 @@ def get_tickertape_sid(company_ticker: str) -> str | None:
             f"{BASE}/search?text={clean}&type=stock",
             headers=TICKERTAPE_HEADERS, timeout=5,
         )
+        # ── DEBUG ─────────────────────────────────────────────────────────────
+        st.write("**TT Status code:**", r.status_code)
+        st.write("**TT Response:**", r.text[:300])
+        # ─────────────────────────────────────────────────────────────────────
         data    = r.json()
         results = data.get("data", {}).get("stocks", [])
         if results:
             return results[0].get("sid")
-    except Exception:
-        pass
+    except Exception as e:
+        st.write("**TT Exception:**", str(e))
     return None
 
 
