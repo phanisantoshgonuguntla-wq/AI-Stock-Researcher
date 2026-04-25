@@ -541,16 +541,16 @@ def fetch_stock_data(ticker: str) -> dict | None:
         asset    = yf.Ticker(ticker)
         raw_hist = asset.history(period="6mo")
 
-        # DEBUG block - shows raw yfinance output in sidebar
-        with st.sidebar.expander("yfinance debug", expanded=False):
-            st.write("Raw columns:", raw_hist.columns.tolist())
-            st.write("Column type:", type(raw_hist.columns).__name__)
-            st.write("Shape:", raw_hist.shape)
-            if not raw_hist.empty:
-                st.write("Last row (raw):", raw_hist.tail(1))
 
         hist = clean_yf_df(raw_hist)
         if hist.empty:
+            return None
+
+        # Drop rows where Close is NaN or zero — yfinance includes the current
+        # incomplete trading day as the last row with empty OHLC prices
+        hist = hist[hist["Close"].notna() & (hist["Close"] > 0)]
+        if hist.empty or len(hist) < 2:
+            st.error(f"No valid price data for `{ticker}`.")
             return None
 
         def extract(col):
@@ -565,6 +565,10 @@ def fetch_stock_data(ticker: str) -> dict | None:
         high   = extract("High")
         low    = extract("Low")
         volume = extract("Volume")
+
+        if len(close) < 2:
+            st.error(f"Not enough price data for `{ticker}`.")
+            return None
 
         curr       = round(float(close.iloc[-1]), 2)
         prev       = round(float(close.iloc[-2]), 2)
@@ -614,6 +618,7 @@ def simulate_pnl(ticker: str, amount: float, inv_date: str) -> dict | None:
         # Use Ticker().history() to avoid yf.download() MultiIndex issues
         raw_hist = clean_yf_df(
             yf.Ticker(ticker).history(start=start, end=end))
+        raw_hist = raw_hist[raw_hist["Close"].notna() & (raw_hist["Close"] > 0)]
         if raw_hist.empty or len(raw_hist) < 2:
             return None
 
@@ -637,6 +642,7 @@ def simulate_pnl(ticker: str, amount: float, inv_date: str) -> dict | None:
         nifty_norm   = None
         raw_nifty = clean_yf_df(
             yf.Ticker("^NSEI").history(start=start, end=end))
+        raw_nifty = raw_nifty[raw_nifty["Close"].notna() & (raw_nifty["Close"] > 0)]
         if not raw_nifty.empty:
             raw_nc = raw_nifty["Close"]
             if isinstance(raw_nc, pd.DataFrame):
@@ -690,6 +696,7 @@ def fetch_movers():
     for ticker in NIFTY50:
         try:
             hist = clean_yf_df(yf.Ticker(ticker).history(period="2d"))
+            hist = hist[hist["Close"].notna() & (hist["Close"] > 0)]
             if hist.empty or len(hist) < 2:
                 continue
             raw_close = hist["Close"]
