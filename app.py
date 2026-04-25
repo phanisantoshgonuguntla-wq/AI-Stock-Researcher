@@ -1102,7 +1102,7 @@ with tab_stocks:
             news_items = fetch_news(raw)
             status.write(f"   → {len(news_items)} headline(s) found")
 
-           status.write("📋 Fetching fundamentals & peers...")
+            status.write("📋 Fetching fundamentals & peers...")
             tt_sid          = get_tickertape_sid(ticker)
             tt_fundamentals = get_fundamentals(tt_sid) if tt_sid else {}
             tt_peers        = get_peers(tt_sid)         if tt_sid else []
