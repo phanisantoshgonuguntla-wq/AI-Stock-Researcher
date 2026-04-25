@@ -118,7 +118,7 @@ def clean_yf_df(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
-# ── TICKERTAPE (Fundamentals, Peers, Shareholding) ────────────────────────────
+# ── TICKERTAPE (kept for fundamentals attempt) ────────────────────────────────
 TICKERTAPE_HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
     "Accept": "application/json",
@@ -134,20 +134,18 @@ def get_tickertape_sid(company_ticker: str) -> str | None:
     try:
         clean = company_ticker.replace(".NS", "").replace(".BO", "")
         r = requests.get(
-            f"{BASE}/search?text={clean}",          # ← removed &type=stock
+            f"{BASE}/search?text={clean}",
             headers=TICKERTAPE_HEADERS, timeout=5,
         )
         if r.status_code != 200:
             return None
         data    = r.json()
-        # Search returns mixed results — find the first stock entry
         results = (
-            data.get("data", {}).get("stocks", [])  # try stocks key first
-            or data.get("data", {}).get("equity", [])  # fallback key
-            or data.get("data", [])                    # bare list fallback
+            data.get("data", {}).get("stocks", [])
+            or data.get("data", {}).get("equity", [])
+            or data.get("data", [])
         )
         if isinstance(results, list) and results:
-            # If results is a list of dicts, get sid from first item
             first = results[0]
             if isinstance(first, dict):
                 return first.get("sid") or first.get("id")
@@ -160,7 +158,7 @@ def get_tickertape_sid(company_ticker: str) -> str | None:
 
 @st.cache_data(ttl=3600)
 def get_fundamentals(sid: str) -> dict:
-    """Get P/E, ROE, market cap and other ratios."""
+    """Get P/E, ROE, market cap and other ratios from Tickertape."""
     try:
         r = requests.get(
             f"{BASE}/stocks/{sid}/ratios/",
@@ -173,7 +171,7 @@ def get_fundamentals(sid: str) -> dict:
 
 @st.cache_data(ttl=3600)
 def get_peers(sid: str) -> list:
-    """Get peer comparison data."""
+    """Get peer comparison data from Tickertape."""
     try:
         r = requests.get(
             f"{BASE}/stocks/{sid}/peers/",
@@ -186,7 +184,7 @@ def get_peers(sid: str) -> list:
 
 @st.cache_data(ttl=3600)
 def get_shareholding(sid: str) -> dict:
-    """Get FII/DII/Promoter shareholding pattern."""
+    """Get FII/DII/Promoter shareholding from Tickertape."""
     try:
         r = requests.get(
             f"{BASE}/stocks/{sid}/shareholding/",
@@ -195,10 +193,13 @@ def get_shareholding(sid: str) -> dict:
         return r.json().get("data", {})
     except Exception:
         return {}
+
+
+# ── FUNDAMENTALS FALLBACK (yfinance) ─────────────────────────────────────────
 def get_fundamentals_yf(ticker: str) -> dict:
     """
     Fallback fundamentals from yfinance .info
-    Works for most Nifty 50 stocks, unreliable for smaller caps.
+    Works for most Nifty 50 stocks.
     """
     try:
         info = yf.Ticker(ticker).info
@@ -224,6 +225,167 @@ def get_fundamentals_yf(ticker: str) -> dict:
         }
     except Exception:
         return {}
+
+
+# ── PEER MAP + PEER FALLBACK (yfinance) ───────────────────────────────────────
+PEER_MAP = {
+    "RELIANCE.NS":   ["ONGC.NS", "BPCL.NS", "IOC.NS", "VEDL.NS", "COALINDIA.NS"],
+    "TCS.NS":        ["INFY.NS", "WIPRO.NS", "HCLTECH.NS", "TECHM.NS"],
+    "INFY.NS":       ["TCS.NS", "WIPRO.NS", "HCLTECH.NS", "TECHM.NS"],
+    "WIPRO.NS":      ["TCS.NS", "INFY.NS", "HCLTECH.NS", "TECHM.NS"],
+    "HCLTECH.NS":    ["TCS.NS", "INFY.NS", "WIPRO.NS", "TECHM.NS"],
+    "TECHM.NS":      ["TCS.NS", "INFY.NS", "WIPRO.NS", "HCLTECH.NS"],
+    "HDFCBANK.NS":   ["ICICIBANK.NS", "KOTAKBANK.NS", "AXISBANK.NS", "SBIN.NS"],
+    "ICICIBANK.NS":  ["HDFCBANK.NS", "KOTAKBANK.NS", "AXISBANK.NS", "SBIN.NS"],
+    "KOTAKBANK.NS":  ["HDFCBANK.NS", "ICICIBANK.NS", "AXISBANK.NS", "SBIN.NS"],
+    "AXISBANK.NS":   ["HDFCBANK.NS", "ICICIBANK.NS", "KOTAKBANK.NS", "SBIN.NS"],
+    "SBIN.NS":       ["HDFCBANK.NS", "ICICIBANK.NS", "KOTAKBANK.NS", "AXISBANK.NS"],
+    "BAJFINANCE.NS": ["BAJAJFINSV.NS", "SBILIFE.NS", "HDFCLIFE.NS", "ICICIBANK.NS"],
+    "MARUTI.NS":     ["TATAMOTORS.NS", "EICHERMOT.NS", "BAJAJ-AUTO.NS", "HEROMOTOCO.NS"],
+    "TATAMOTORS.NS": ["MARUTI.NS", "EICHERMOT.NS", "BAJAJ-AUTO.NS", "HEROMOTOCO.NS"],
+    "SUNPHARMA.NS":  ["DRREDDY.NS", "CIPLA.NS", "DIVISLAB.NS", "APOLLOHOSP.NS"],
+    "DRREDDY.NS":    ["SUNPHARMA.NS", "CIPLA.NS", "DIVISLAB.NS", "APOLLOHOSP.NS"],
+    "CIPLA.NS":      ["SUNPHARMA.NS", "DRREDDY.NS", "DIVISLAB.NS", "APOLLOHOSP.NS"],
+    "DIVISLAB.NS":   ["SUNPHARMA.NS", "DRREDDY.NS", "CIPLA.NS", "APOLLOHOSP.NS"],
+    "APOLLOHOSP.NS": ["SUNPHARMA.NS", "DRREDDY.NS", "CIPLA.NS", "DIVISLAB.NS"],
+    "ASIANPAINT.NS": ["PIDILITIND.NS", "HAVELLS.NS", "VOLTAS.NS", "TITAN.NS"],
+    "TITAN.NS":      ["ASIANPAINT.NS", "PIDILITIND.NS", "DMART.NS", "TATACONSUM.NS"],
+    "NESTLEIND.NS":  ["HINDUNILVR.NS", "DABUR.NS", "MARICO.NS", "BRITANNIA.NS"],
+    "HINDUNILVR.NS": ["NESTLEIND.NS", "DABUR.NS", "MARICO.NS", "BRITANNIA.NS"],
+    "ITC.NS":        ["HINDUNILVR.NS", "NESTLEIND.NS", "DABUR.NS", "BRITANNIA.NS"],
+    "BRITANNIA.NS":  ["HINDUNILVR.NS", "NESTLEIND.NS", "DABUR.NS", "ITC.NS"],
+    "TATACONSUM.NS": ["HINDUNILVR.NS", "NESTLEIND.NS", "DABUR.NS", "ITC.NS"],
+    "LT.NS":         ["ULTRACEMCO.NS", "SHREECEM.NS", "GRASIM.NS", "ADANIENT.NS"],
+    "TATASTEEL.NS":  ["JSWSTEEL.NS", "HINDALCO.NS", "VEDL.NS", "COALINDIA.NS"],
+    "JSWSTEEL.NS":   ["TATASTEEL.NS", "HINDALCO.NS", "VEDL.NS", "COALINDIA.NS"],
+    "HINDALCO.NS":   ["TATASTEEL.NS", "JSWSTEEL.NS", "VEDL.NS", "COALINDIA.NS"],
+    "VEDL.NS":       ["TATASTEEL.NS", "JSWSTEEL.NS", "HINDALCO.NS", "COALINDIA.NS"],
+    "ONGC.NS":       ["RELIANCE.NS", "BPCL.NS", "IOC.NS", "COALINDIA.NS"],
+    "BPCL.NS":       ["ONGC.NS", "IOC.NS", "RELIANCE.NS", "COALINDIA.NS"],
+    "IOC.NS":        ["ONGC.NS", "BPCL.NS", "RELIANCE.NS", "COALINDIA.NS"],
+    "COALINDIA.NS":  ["ONGC.NS", "BPCL.NS", "IOC.NS", "VEDL.NS"],
+    "ADANIENT.NS":   ["ADANIPORTS.NS", "LT.NS", "GRASIM.NS", "ULTRACEMCO.NS"],
+    "ADANIPORTS.NS": ["ADANIENT.NS", "LT.NS", "GRASIM.NS", "ULTRACEMCO.NS"],
+    "BHARTIARTL.NS": ["HCLTECH.NS", "TECHM.NS", "WIPRO.NS", "INFY.NS"],
+    "POWERGRID.NS":  ["NTPC.NS", "TATAPOWER.NS", "ADANIGREEN.NS", "COALINDIA.NS"],
+    "NTPC.NS":       ["POWERGRID.NS", "TATAPOWER.NS", "ADANIGREEN.NS", "COALINDIA.NS"],
+    "ULTRACEMCO.NS": ["SHREECEM.NS", "GRASIM.NS", "LT.NS", "ADANIENT.NS"],
+    "GRASIM.NS":     ["ULTRACEMCO.NS", "SHREECEM.NS", "LT.NS", "ADANIENT.NS"],
+    "SBILIFE.NS":    ["HDFCLIFE.NS", "BAJAJFINSV.NS", "BAJFINANCE.NS", "ICICIBANK.NS"],
+    "HDFCLIFE.NS":   ["SBILIFE.NS", "BAJAJFINSV.NS", "BAJFINANCE.NS", "ICICIBANK.NS"],
+    "EICHERMOT.NS":  ["MARUTI.NS", "TATAMOTORS.NS", "BAJAJ-AUTO.NS", "HEROMOTOCO.NS"],
+    "HEROMOTOCO.NS": ["BAJAJ-AUTO.NS", "EICHERMOT.NS", "MARUTI.NS", "TATAMOTORS.NS"],
+    "BAJAJ-AUTO.NS": ["HEROMOTOCO.NS", "EICHERMOT.NS", "MARUTI.NS", "TATAMOTORS.NS"],
+    "PIDILITIND.NS": ["ASIANPAINT.NS", "HAVELLS.NS", "TITAN.NS", "DMART.NS"],
+    "DMART.NS":      ["TATACONSUM.NS", "HINDUNILVR.NS", "TITAN.NS", "PIDILITIND.NS"],
+}
+
+
+@st.cache_data(ttl=1800)
+def get_peers_yf(ticker: str) -> list[dict]:
+    """
+    Fetch peer comparison using hardcoded peer map + yfinance.
+    Returns same structure as Tickertape so display code works unchanged.
+    """
+    peer_tickers = PEER_MAP.get(ticker, [])
+    if not peer_tickers:
+        # Partial match fallback for BSE or non-exact tickers
+        base = ticker.replace(".NS", "").replace(".BO", "")
+        for key in PEER_MAP:
+            if base in key or key.replace(".NS", "") in base:
+                peer_tickers = PEER_MAP[key]
+                break
+    if not peer_tickers:
+        return []
+
+    peers = []
+    for pt in peer_tickers:
+        try:
+            hist = clean_yf_df(yf.Ticker(pt).history(period="2d"))
+            if hist.empty or len(hist) < 2:
+                continue
+            close    = hist["Close"].squeeze()
+            curr     = round(float(close.iloc[-1]), 2)
+            prev     = round(float(close.iloc[-2]), 2)
+            change1d = round(((curr - prev) / prev) * 100, 2)
+            info     = yf.Ticker(pt).info
+            pe       = round(float(info.get("trailingPE", 0)), 2) \
+                       if info.get("trailingPE") else "N/A"
+            mktcap   = f"₹{round(float(info.get('marketCap', 0)) / 1e9, 2)}B" \
+                       if info.get("marketCap") else "N/A"
+            peers.append({
+                "name":     pt.replace(".NS", "").replace(".BO", ""),
+                "close":    curr,
+                "change1d": change1d,
+                "pe":       pe,
+                "mktcap":   mktcap,
+            })
+        except Exception:
+            continue
+    return peers
+
+
+# ── SHAREHOLDING (NSE India official data) ────────────────────────────────────
+@st.cache_data(ttl=86400)   # quarterly data — cache 24 hours
+def get_shareholding_nse(ticker: str) -> dict:
+    """
+    Fetch shareholding pattern from NSE India's official public API.
+    No API key required — official government data.
+    """
+    try:
+        symbol  = ticker.replace(".NS", "").replace(".BO", "")
+        url     = (
+            f"https://www.nseindia.com/api/corporate-share-holdings-master"
+            f"?symbol={symbol}&market=equities"
+        )
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                          "AppleWebKit/537.36 (KHTML, like Gecko) "
+                          "Chrome/120.0.0.0 Safari/537.36",
+            "Accept":         "application/json, text/plain, */*",
+            "Accept-Language": "en-US,en;q=0.9",
+            "Referer":        "https://www.nseindia.com/",
+        }
+        session = requests.Session()
+        # NSE requires a valid session cookie — get homepage first
+        session.get(
+            "https://www.nseindia.com",
+            headers=headers, timeout=8,
+        )
+        r = session.get(url, headers=headers, timeout=8)
+        if r.status_code != 200:
+            return {}
+        data = r.json()
+        if not data:
+            return {}
+        latest = data[0] if isinstance(data, list) else data
+        return {
+            "promoter": round(float(
+                latest.get("promoterAndPromoterGroupTotal", 0)), 2),
+            "fii":      round(float(
+                latest.get("foreignPortfolioInvestorsTotal", 0)), 2),
+            "dii":      round(float(
+                latest.get("mutualFundsTotal", 0)), 2),
+            "public":   round(float(
+                latest.get("publicTotal", 0)), 2),
+            "quarter":  latest.get("date", ""),
+        }
+    except Exception:
+        return {}
+
+
+def add_to_wishlist(name: str, ticker: str, price: float) -> bool:
+    already = any(w["ticker"] == ticker for w in st.session_state.wishlist)
+    if not already:
+        st.session_state.wishlist.append({
+            "name":   name,
+            "ticker": ticker,
+            "price":  price,
+            "added":  datetime.now().strftime("%d %b %Y %I:%M %p"),
+        })
+        save_wishlist(st.session_state.wishlist)
+        return True
+    return False
 
 
 def add_to_wishlist(name: str, ticker: str, price: float) -> bool:
@@ -940,22 +1102,30 @@ with tab_stocks:
             news_items = fetch_news(raw)
             status.write(f"   → {len(news_items)} headline(s) found")
 
-            status.write("📋 Fetching fundamentals from Tickertape...")
+           status.write("📋 Fetching fundamentals & peers...")
             tt_sid          = get_tickertape_sid(ticker)
-            tt_fundamentals = get_fundamentals(tt_sid)  if tt_sid else {}
-            tt_peers        = get_peers(tt_sid)          if tt_sid else []
-            tt_shareholding = get_shareholding(tt_sid)   if tt_sid else {}
+            tt_fundamentals = get_fundamentals(tt_sid) if tt_sid else {}
+            tt_peers        = get_peers(tt_sid)         if tt_sid else []
+            tt_shareholding = get_shareholding(tt_sid)  if tt_sid else {}
 
-            # Fallback to yfinance if Tickertape unavailable
+            # Fundamentals fallback → yfinance
             if not tt_fundamentals:
-                status.write("   → Tickertape unavailable, trying yfinance...")
                 tt_fundamentals = get_fundamentals_yf(ticker)
                 if tt_fundamentals:
                     status.write("   → Fundamentals loaded from yfinance")
-                else:
-                    status.write("   → No fundamental data available")
+
+            # Peers fallback → hardcoded map + yfinance
+            if not tt_peers:
+                tt_peers = get_peers_yf(ticker)
+                if tt_peers:
+                    status.write(f"   → {len(tt_peers)} peer(s) loaded")
+
+            # Shareholding → NSE India official API
+            tt_shareholding = get_shareholding_nse(ticker)
+            if tt_shareholding:
+                status.write("   → Shareholding pattern loaded from NSE")
             else:
-                status.write("   → Fundamentals, peers & shareholding loaded")
+                status.write("   → Shareholding data unavailable")
 
             status.write("🤖 Running AI analysis with all indicators...")
             analysis = get_gemini_analysis(
