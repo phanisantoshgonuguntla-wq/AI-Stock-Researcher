@@ -1,7 +1,6 @@
 import streamlit as st
 import yfinance as yf
-from google import genai
-from google.genai import types as genai_types
+import google.generativeai as genai
 import feedparser
 import smtplib
 import re
@@ -19,7 +18,7 @@ from datetime import datetime, timedelta
 st.set_page_config(page_title="AI Stock Advisor (India)", layout="wide", page_icon="📈")
 
 try:
-    gemini_client = genai.Client(api_key=st.secrets["GOOGLE_API_KEY"])
+    genai.configure(api_key=st.secrets["GOOGLE_API_KEY"])
 except Exception:
     st.error("🔑 Add GOOGLE_API_KEY to Streamlit Secrets.")
     st.stop()
@@ -61,19 +60,25 @@ if "chat_history"  not in st.session_state:
 # ── AUTO-DETECT BEST MODEL ────────────────────────────────────────────────────
 def get_best_model() -> str:
     preferred = [
-        "gemini-2.5-flash",
         "gemini-2.5-flash-lite",
+        "gemini-2.5-flash-lite-preview-06-17",
+        "gemini-2.5-flash",
+        "gemini-2.5-flash-preview-05-20",
         "gemini-2.0-flash",
         "gemini-1.5-flash",
     ]
     try:
-        available = [m.name for m in gemini_client.models.list()]
+        available = [
+            m.name.replace("models/", "")
+            for m in genai.list_models()
+            if "generateContent" in m.supported_generation_methods
+        ]
         for model in preferred:
-            if any(model in a for a in available):
+            if model in available:
                 return model
     except Exception:
         pass
-    return "gemini-2.0-flash"
+    return "gemini-1.5-flash"
 
 MODEL = get_best_model()
 
@@ -105,54 +110,11 @@ def clean_ticker(raw: str, suffix: str) -> str | None:
 
 
 def clean_yf_df(df: pd.DataFrame) -> pd.DataFrame:
-    """
-    Normalise a yfinance DataFrame regardless of version.
-
-    yfinance ≥ 0.2.50 returns MultiIndex columns like:
-        ('Close', 'RELIANCE.NS'), ('Open', 'RELIANCE.NS'), …
-    Older versions return flat columns: 'Close', 'Open', …
-
-    After this function every column is a plain string and duplicates
-    are removed, so df['Close'] always yields a plain Series.
-    """
-    if df is None or df.empty:
-        return df
-
+    """Flatten MultiIndex columns from yfinance and remove duplicates."""
     if isinstance(df.columns, pd.MultiIndex):
-        # Keep only the price-field level (level 0) and drop the ticker level
-        df = df.copy()
         df.columns = df.columns.get_level_values(0)
-
-    # After flattening we may still have duplicate column names
-    # (e.g. two 'Close' columns if two tickers were downloaded).
-    # Keep only the first occurrence.
-    df = df.loc[:, ~df.columns.duplicated(keep="first")]
+    df = df.loc[:, ~df.columns.duplicated()]
     return df
-
-
-def safe_series(df: pd.DataFrame, col: str) -> pd.Series:
-    """
-    Extract *col* from *df* and guarantee a 1-D pd.Series is returned.
-
-    Handles every yfinance edge-case:
-    - Column is already a Series → return as-is
-    - Column is a 1-column DataFrame (can happen after MultiIndex flatten) → take iloc[:,0]
-    - squeeze() on a single-element Series would give a scalar → guard against that
-    """
-    if col not in df.columns:
-        raise KeyError(f"Column '{col}' not found. Available: {df.columns.tolist()}")
-
-    s = df[col]
-
-    # If it's still a DataFrame (duplicate columns survived), take the first
-    if isinstance(s, pd.DataFrame):
-        s = s.iloc[:, 0]
-
-    # Ensure it really is a Series (not a scalar from a 1-row df)
-    if not isinstance(s, pd.Series):
-        s = pd.Series([s], index=df.index)
-
-    return s
 
 
 def add_to_wishlist(name: str, ticker: str, price: float) -> bool:
@@ -170,7 +132,7 @@ def add_to_wishlist(name: str, ticker: str, price: float) -> bool:
 
 
 # ── TECHNICAL INDICATORS ──────────────────────────────────────────────────────
-def calculate_rsi(prices: pd.Series, period: int = 14) -> pd.Series:
+def calculate_rsi(prices, period: int = 14):
     delta    = prices.diff()
     gain     = delta.where(delta > 0, 0.0)
     loss     = -delta.where(delta < 0, 0.0)
@@ -181,7 +143,7 @@ def calculate_rsi(prices: pd.Series, period: int = 14) -> pd.Series:
     return rsi
 
 
-def calculate_macd(prices: pd.Series, fast: int = 12, slow: int = 26, signal: int = 9):
+def calculate_macd(prices, fast: int = 12, slow: int = 26, signal: int = 9):
     ema_fast    = prices.ewm(span=fast,   adjust=False).mean()
     ema_slow    = prices.ewm(span=slow,   adjust=False).mean()
     macd_line   = ema_fast - ema_slow
@@ -190,7 +152,7 @@ def calculate_macd(prices: pd.Series, fast: int = 12, slow: int = 26, signal: in
     return macd_line, signal_line, histogram
 
 
-def calculate_bollinger(prices: pd.Series, period: int = 20, std_dev: float = 2.0):
+def calculate_bollinger(prices, period: int = 20, std_dev: float = 2.0):
     sma   = prices.rolling(period).mean()
     std   = prices.rolling(period).std()
     upper = sma + std_dev * std
@@ -199,18 +161,9 @@ def calculate_bollinger(prices: pd.Series, period: int = 20, std_dev: float = 2.
 
 
 # ── CANDLESTICK + INDICATORS CHART ───────────────────────────────────────────
-def build_chart(hist: pd.DataFrame, ticker: str) -> go.Figure:
-    def _flat(col):
-        s = hist[col]
-        if isinstance(s, pd.DataFrame): s = s.iloc[:, 0]
-        return pd.Series(s.to_numpy().flatten().astype(float), index=hist.index[:len(s)])
-    close  = _flat("Close")
-    open_  = _flat("Open")
-    high   = _flat("High")
-    low    = _flat("Low")
-    volume = _flat("Volume")
-
-    rsi                               = calculate_rsi(close)
+def build_chart(hist, ticker: str) -> go.Figure:
+    close = hist["Close"].squeeze()
+    rsi   = calculate_rsi(close)
     macd_line, signal_line, histogram = calculate_macd(close)
     bb_upper, bb_mid, bb_lower        = calculate_bollinger(close)
     sma50 = close.rolling(50).mean()
@@ -231,9 +184,9 @@ def build_chart(hist: pd.DataFrame, ticker: str) -> go.Figure:
     # Panel 1: Candlestick
     fig.add_trace(go.Candlestick(
         x=hist.index,
-        open=open_,
-        high=high,
-        low=low,
+        open=hist["Open"].squeeze(),
+        high=hist["High"].squeeze(),
+        low=hist["Low"].squeeze(),
         close=close,
         name="Price",
         increasing_line_color="#26a69a",
@@ -267,14 +220,14 @@ def build_chart(hist: pd.DataFrame, ticker: str) -> go.Figure:
         name="SMA 50",
     ), row=1, col=1)
 
-    # Panel 2: Volume — colour by up/down candle
+    # Panel 2: Volume
     colors = [
-        "#26a69a" if float(close.iloc[i]) >= float(open_.iloc[i])
+        "#26a69a" if float(close.iloc[i]) >= float(hist["Open"].squeeze().iloc[i])
         else "#ef5350"
         for i in range(len(close))
     ]
     fig.add_trace(go.Bar(
-        x=hist.index, y=volume,
+        x=hist.index, y=hist["Volume"].squeeze(),
         marker_color=colors,
         name="Volume", showlegend=False,
     ), row=2, col=1)
@@ -325,12 +278,9 @@ def build_chart(hist: pd.DataFrame, ticker: str) -> go.Figure:
 
 
 # ── TECHNICAL SUMMARY FOR GEMINI ─────────────────────────────────────────────
-def get_technical_summary(hist: pd.DataFrame) -> dict:
-    raw_c = hist["Close"]
-    if isinstance(raw_c, pd.DataFrame): raw_c = raw_c.iloc[:, 0]
-    close = pd.Series(raw_c.to_numpy().flatten().astype(float), index=hist.index)
-
-    rsi                               = calculate_rsi(close)
+def get_technical_summary(hist) -> dict:
+    close = hist["Close"].squeeze()
+    rsi   = calculate_rsi(close)
     macd_line, signal_line, histogram = calculate_macd(close)
     bb_upper, bb_mid, bb_lower        = calculate_bollinger(close)
 
@@ -366,246 +316,82 @@ def get_technical_summary(hist: pd.DataFrame) -> dict:
         bb_signal = f"Price within bands at {pct}% of band width"
 
     return {
-        "rsi":         last_rsi,
-        "rsi_signal":  rsi_signal,
-        "macd":        last_macd,
+        "rsi":        last_rsi,
+        "rsi_signal": rsi_signal,
+        "macd":       last_macd,
         "macd_signal": macd_signal,
-        "bb_upper":    last_bb_up,
-        "bb_lower":    last_bb_low,
-        "bb_signal":   bb_signal,
+        "bb_upper":   last_bb_up,
+        "bb_lower":   last_bb_low,
+        "bb_signal":  bb_signal,
     }
 
 
 # ── TICKER RESOLVER ───────────────────────────────────────────────────────────
-# ── LOCAL TICKER DICTIONARY (no API call needed) ─────────────────────────────
-TICKER_MAP = {
-    # Large caps & Nifty 50
-    "reliance":"RELIANCE","reliance industries":"RELIANCE",
-    "tcs":"TCS","tata consultancy":"TCS","tata consultancy services":"TCS",
-    "infosys":"INFY","infy":"INFY",
-    "hdfc bank":"HDFCBANK","hdfcbank":"HDFCBANK","hdfc":"HDFCBANK",
-    "icici bank":"ICICIBANK","icicibank":"ICICIBANK","icici":"ICICIBANK",
-    "kotak":"KOTAKBANK","kotak mahindra":"KOTAKBANK","kotakbank":"KOTAKBANK",
-    "axis bank":"AXISBANK","axisbank":"AXISBANK","axis":"AXISBANK",
-    "sbi":"SBIN","state bank":"SBIN","state bank of india":"SBIN",
-    "wipro":"WIPRO",
-    "hcl":"HCLTECH","hcl tech":"HCLTECH","hcltech":"HCLTECH",
-    "tech mahindra":"TECHM","techm":"TECHM",
-    "bharti airtel":"BHARTIARTL","airtel":"BHARTIARTL","bhartiartl":"BHARTIARTL",
-    "itc":"ITC",
-    "hindustan unilever":"HINDUNILVR","hul":"HINDUNILVR","hindunilvr":"HINDUNILVR",
-    "asian paints":"ASIANPAINT","asianpaint":"ASIANPAINT",
-    "maruti":"MARUTI","maruti suzuki":"MARUTI",
-    "bajaj finance":"BAJFINANCE","bajajfinance":"BAJFINANCE","bajfinance":"BAJFINANCE",
-    "bajaj finserv":"BAJAJFINSV","bajajfinsv":"BAJAJFINSV",
-    "bajaj auto":"BAJAJ-AUTO","bajaj-auto":"BAJAJ-AUTO",
-    "hero motocorp":"HEROMOTOCO","hero":"HEROMOTOCO","heromotoco":"HEROMOTOCO",
-    "eicher motors":"EICHERMOT","eichermot":"EICHERMOT",
-    "mahindra":"M&M","m&m":"M&M","mahindra and mahindra":"M&M",
-    "tata motors":"TATAMOTORS","tatamotors":"TATAMOTORS",
-    "tata steel":"TATASTEEL","tatasteel":"TATASTEEL",
-    "jsw steel":"JSWSTEEL","jswsteel":"JSWSTEEL",
-    "hindalco":"HINDALCO",
-    "ongc":"ONGC","oil and natural gas":"ONGC",
-    "ntpc":"NTPC",
-    "power grid":"POWERGRID","powergrid":"POWERGRID",
-    "coal india":"COALINDIA","coalindia":"COALINDIA",
-    "bpcl":"BPCL","bharat petroleum":"BPCL",
-    "ioc":"IOC","indian oil":"IOC",
-    "sun pharma":"SUNPHARMA","sunpharma":"SUNPHARMA","sun pharmaceutical":"SUNPHARMA",
-    "dr reddy":"DRREDDY","drreddy":"DRREDDY","dr reddys":"DRREDDY",
-    "cipla":"CIPLA",
-    "divis lab":"DIVISLAB","divislab":"DIVISLAB","divis":"DIVISLAB",
-    "apollo hospitals":"APOLLOHOSP","apollohosp":"APOLLOHOSP","apollo":"APOLLOHOSP",
-    "sbi life":"SBILIFE","sbilife":"SBILIFE",
-    "hdfc life":"HDFCLIFE","hdfclife":"HDFCLIFE",
-    "titan":"TITAN",
-    "nestle":"NESTLEIND","nestleind":"NESTLEIND","nestle india":"NESTLEIND",
-    "ultratech cement":"ULTRACEMCO","ultracemco":"ULTRACEMCO","ultratech":"ULTRACEMCO",
-    "grasim":"GRASIM",
-    "tata consumer":"TATACONSUM","tataconsum":"TATACONSUM",
-    "pidilite":"PIDILITIND","pidilitind":"PIDILITIND",
-    "dmart":"DMART","avenue supermarts":"DMART",
-    "britannia":"BRITANNIA",
-    "shree cement":"SHREECEM","shreecem":"SHREECEM",
-    "adani enterprises":"ADANIENT","adanient":"ADANIENT","adani":"ADANIENT",
-    "adani ports":"ADANIPORTS","adaniports":"ADANIPORTS",
-    # Mid caps
-    "zomato":"ZOMATO",
-    "swiggy":"SWIGGY",
-    "paytm":"PAYTM","one97":"PAYTM",
-    "nykaa":"NYKAA","fss":"NYKAA",
-    "policybazaar":"POLICYBZR","policybzr":"POLICYBZR",
-    "ola electric":"OLAELEC","olaelec":"OLAELEC",
-    "indigo":"INDIGO","interglobe":"INDIGO",
-    "spicejet":"SPICEJET",
-    "irctc":"IRCTC",
-    "mrf":"MRF",
-    "berger paints":"BERGEPAINT","bergepaint":"BERGEPAINT",
-    "havells":"HAVELLS",
-    "voltas":"VOLTAS",
-    "bhel":"BHEL",
-    "abb":"ABB",
-    "siemens":"SIEMENS",
-    "godrej consumer":"GODREJCP","godrejcp":"GODREJCP",
-    "marico":"MARICO",
-    "dabur":"DABUR",
-    "emami":"EMAMILTD",
-    "colgate":"COLPAL","colgate palmolive":"COLPAL",
-    "page industries":"PAGEIND","pageind":"PAGEIND",
-    "info edge":"NAUKRI","naukri":"NAUKRI",
-    "just dial":"JUSTDIAL",
-    "mphasis":"MPHASIS",
-    "persistent":"PERSISTENT","persistent systems":"PERSISTENT",
-    "ltimindtree":"LTIM","ltim":"LTIM",
-    "l&t technology":"LTTS","ltts":"LTTS",
-    "coforge":"COFORGE",
-    "zensar":"ZENSARTECH",
-    "tata power":"TATAPOWER","tatapower":"TATAPOWER",
-    "torrent power":"TORNTPOWER","torntpower":"TORNTPOWER",
-    "indraprastha gas":"IGL","igl":"IGL",
-    "mahanagar gas":"MGL","mgl":"MGL",
-    "petronet":"PETRONET","petronet lng":"PETRONET",
-    "max healthcare":"MAXHEALTH","maxhealth":"MAXHEALTH",
-    "fortis":"FORTIS","fortis healthcare":"FORTIS",
-    "alkem":"ALKEM","alkem laboratories":"ALKEM",
-    "torrent pharma":"TORNTPHARM","torntpharm":"TORNTPHARM",
-    "aurobindo":"AUROPHARMA","auropharma":"AUROPHARMA",
-    "laurus labs":"LAURUSLABS","lauruslabs":"LAURUSLABS",
-    "srf":"SRF",
-    "atul":"ATUL",
-    "pi industries":"PIIND","piind":"PIIND",
-    "united spirits":"MCDOWELL-N","diageo":"MCDOWELL-N",
-    "united breweries":"UBL","ubl":"UBL",
-    "varun beverages":"VBL","vbl":"VBL",
-}
-
 def resolve_ticker(company_name: str, exchange: str = "NSE") -> str | None:
     suffix = ".NS" if exchange == "NSE" else ".BO"
-    key = company_name.strip().lower()
-
-    # 1. Direct dictionary lookup
-    base = TICKER_MAP.get(key)
-    if base:
-        return base + suffix
-
-    # 2. Partial match — find any key that contains all words from input
-    words = [w for w in key.split() if len(w) > 2]
-    if words:
-        for map_key, map_val in TICKER_MAP.items():
-            if all(w in map_key for w in words):
-                return map_val + suffix
-
-    # 3. Try the input directly as a ticker (user may have typed it)
-    candidate = key.upper().replace(" ", "")
-    test = yf.Ticker(candidate + suffix)
+    prompt = f"""You are a stock ticker database for Indian stock markets.
+Task: Find the exact NSE/BSE ticker symbol for the company below.
+Company: {company_name}
+Exchange: {exchange}
+Required suffix: {suffix}
+Rules:
+- Reply with ONLY the complete ticker symbol including the suffix
+- Do not truncate or shorten the ticker
+- Do not add any explanation or extra text
+Examples: WIPRO.NS RELIANCE.NS HDFCBANK.NS TCS.NS INFY.NS SBIN.NS ZOMATO.NS
+If truly unknown reply: UNKNOWN
+Complete ticker symbol for {company_name}:"""
     try:
-        h = test.history(period="1d")
-        if not h.empty:
-            return candidate + suffix
-    except Exception:
-        pass
-
-    # 4. Last resort — Gemini (with retry on 503)
-    prompt = (
-        f"Indian stock market NSE/BSE ticker for: {company_name}\n"
-        f"Reply with ONLY the ticker symbol ending in {suffix}. "
-        f"Examples: WIPRO.NS TCS.NS RELIANCE.NS\n"
-        f"If unknown reply: UNKNOWN"
-    )
-    for attempt in range(3):
-        try:
-            response = gemini_client.models.generate_content(
-                model=MODEL,
-                contents=prompt,
-                config=genai_types.GenerateContentConfig(
-                    max_output_tokens=50, temperature=0.0),
-            )
-            result = clean_ticker(response.text, suffix)
-            if result and result != "UNKNOWN":
-                return result
-            break
-        except Exception as e:
-            msg = str(e)
-            if "503" in msg and attempt < 2:
-                import time; time.sleep(2 ** attempt)
-                continue
-            st.warning(f"AI ticker lookup failed: {msg}. Try typing the ticker directly e.g. TCS.NS")
-            break
-    return None
+        model    = genai.GenerativeModel(MODEL)
+        response = model.generate_content(
+            prompt,
+            generation_config=genai.GenerationConfig(
+                max_output_tokens=200, temperature=0.0),
+        )
+        result = clean_ticker(response.text, suffix)
+        if result:
+            base = result.replace(".NS", "").replace(".BO", "")
+            if len(base) < 3:
+                retry = model.generate_content(
+                    f"Write the FULL NSE ticker for {company_name} ending in "
+                    f"{suffix}. Example: Wipro = WIPRO.NS. Just the ticker:",
+                    generation_config=genai.GenerationConfig(
+                        max_output_tokens=200, temperature=0.0),
+                )
+                result = clean_ticker(retry.text, suffix)
+        return result
+    except Exception as e:
+        st.warning(f"Ticker lookup error: {e}")
+        return None
 
 
 # ── STOCK DATA ────────────────────────────────────────────────────────────────
 def fetch_stock_data(ticker: str) -> dict | None:
     try:
-        asset    = yf.Ticker(ticker)
-        raw_hist = asset.history(period="6mo")
-
-
-        hist = clean_yf_df(raw_hist)
+        asset = yf.Ticker(ticker)
+        hist  = clean_yf_df(asset.history(period="6mo"))  # ← fixed indentation
         if hist.empty:
             return None
-
-        # Drop rows where Close is NaN or zero — yfinance includes the current
-        # incomplete trading day as the last row with empty OHLC prices
-        hist = hist[hist["Close"].notna() & (hist["Close"] > 0)]
-        if hist.empty or len(hist) < 2:
-            st.error(f"No valid price data for `{ticker}`.")
-            return None
-
-        def extract(col):
-            s = hist[col]
-            if isinstance(s, pd.DataFrame):
-                s = s.iloc[:, 0]
-            arr = s.to_numpy().flatten().astype(float)
-            return pd.Series(arr, index=hist.index[:len(arr)])
-
-        close  = extract("Close")
-        open_  = extract("Open")
-        high   = extract("High")
-        low    = extract("Low")
-        volume = extract("Volume")
-
-        if len(close) < 2:
-            st.error(f"Not enough price data for `{ticker}`.")
-            return None
-
+        close      = hist["Close"].squeeze()
         curr       = round(float(close.iloc[-1]), 2)
         prev       = round(float(close.iloc[-2]), 2)
-        high_52w   = round(float(high.max()), 2)
-        low_52w    = round(float(low.min()), 2)
+        high_52w   = round(float(hist["High"].squeeze().max()), 2)
+        low_52w    = round(float(hist["Low"].squeeze().min()), 2)
         sma20      = round(float(close.tail(20).mean()), 2)
         sma50      = (round(float(close.tail(50).mean()), 2)
                       if len(hist) >= 50 else None)
         change     = round(curr - prev, 2)
         change_pct = round((change / prev) * 100, 2)
-        avg_vol    = int(volume.tail(20).mean())
-        last_vol   = int(volume.iloc[-1])
-
-        hist = hist.copy()
-        hist["Close"]  = close.values
-        hist["Open"]   = open_.values
-        hist["High"]   = high.values
-        hist["Low"]    = low.values
-        hist["Volume"] = volume.values
-
+        avg_vol    = int(hist["Volume"].squeeze().tail(20).mean())
+        last_vol   = int(hist["Volume"].squeeze().iloc[-1])
         return {
-            "ticker":     ticker,
-            "price":      curr,
-            "change":     change,
-            "change_pct": change_pct,
-            "high_52w":   high_52w,
-            "low_52w":    low_52w,
-            "sma20":      sma20,
-            "sma50":      sma50,
-            "avg_vol":    avg_vol,
-            "last_vol":   last_vol,
-            "hist":       hist,
+            "ticker": ticker, "price": curr, "change": change,
+            "change_pct": change_pct, "high_52w": high_52w,
+            "low_52w": low_52w, "sma20": sma20, "sma50": sma50,
+            "avg_vol": avg_vol, "last_vol": last_vol, "hist": hist,
         }
     except Exception as e:
-        import traceback
         st.error(f"Price fetch error: {e}")
-        st.code(traceback.format_exc())
         return None
 
 
@@ -615,17 +401,13 @@ def simulate_pnl(ticker: str, amount: float, inv_date: str) -> dict | None:
         start = datetime.strptime(inv_date, "%Y-%m-%d")
         end   = datetime.now()
 
-        # Use Ticker().history() to avoid yf.download() MultiIndex issues
+        # Stock data
         raw_hist = clean_yf_df(
-            yf.Ticker(ticker).history(start=start, end=end))
-        raw_hist = raw_hist[raw_hist["Close"].notna() & (raw_hist["Close"] > 0)]
+            yf.download(ticker, start=start, end=end, progress=False))
         if raw_hist.empty or len(raw_hist) < 2:
             return None
 
-        raw_close = raw_hist["Close"]
-        if isinstance(raw_close, pd.DataFrame):
-            raw_close = raw_close.iloc[:, 0]
-        close = pd.Series(raw_close.to_numpy().flatten().astype(float), index=raw_hist.index)
+        close      = raw_hist["Close"].squeeze()
         buy_price  = float(close.iloc[0])
         sell_price = float(close.iloc[-1])
         shares     = amount / buy_price
@@ -637,17 +419,13 @@ def simulate_pnl(ticker: str, amount: float, inv_date: str) -> dict | None:
         cagr       = ((curr_value / amount) ** (1 / years) - 1) * 100 \
                      if years > 0 else 0
 
-        # Nifty 50 comparison
+        # Nifty 50 comparison  ← fixed: if block restored
         nifty_return = 0.0
         nifty_norm   = None
         raw_nifty = clean_yf_df(
-            yf.Ticker("^NSEI").history(start=start, end=end))
-        raw_nifty = raw_nifty[raw_nifty["Close"].notna() & (raw_nifty["Close"] > 0)]
+            yf.download("^NSEI", start=start, end=end, progress=False))
         if not raw_nifty.empty:
-            raw_nc = raw_nifty["Close"]
-            if isinstance(raw_nc, pd.DataFrame):
-                raw_nc = raw_nc.iloc[:, 0]
-            nifty_close = pd.Series(raw_nc.to_numpy().flatten().astype(float), index=raw_nifty.index)
+            nifty_close  = raw_nifty["Close"].squeeze()
             n_start      = float(nifty_close.iloc[0])
             n_end        = float(nifty_close.iloc[-1])
             nifty_return = ((n_end - n_start) / n_start) * 100
@@ -683,11 +461,11 @@ NIFTY50 = [
     "LT.NS","AXISBANK.NS","ASIANPAINT.NS","MARUTI.NS","HCLTECH.NS",
     "WIPRO.NS","SUNPHARMA.NS","TITAN.NS","BAJFINANCE.NS","NESTLEIND.NS",
     "ULTRACEMCO.NS","TECHM.NS","POWERGRID.NS","NTPC.NS","ONGC.NS",
-    "M&M.NS","TATASTEEL.NS","JSWSTEEL.NS","ADANIENT.NS","ADANIPORTS.NS",
+    "TATAMOTORS.NS","TATASTEEL.NS","JSWSTEEL.NS","ADANIENT.NS","ADANIPORTS.NS",
     "COALINDIA.NS","BAJAJ-AUTO.NS","HEROMOTOCO.NS","EICHERMOT.NS","DIVISLAB.NS",
     "DRREDDY.NS","CIPLA.NS","APOLLOHOSP.NS","SBILIFE.NS","HDFCLIFE.NS",
-    "HINDALCO.NS","BPCL.NS","IOC.NS","GRASIM.NS","TATACONSUM.NS",
-    "PIDILITIND.NS","DMART.NS","BRITANNIA.NS","SHREECEM.NS","BAJAJFINSV.NS",
+    "HINDALCO.NS","VEDL.NS","BPCL.NS","IOC.NS","GRASIM.NS",
+    "TATACONSUM.NS","PIDILITIND.NS","DMART.NS","BRITANNIA.NS","SHREECEM.NS",
 ]
 
 @st.cache_data(ttl=900)
@@ -696,13 +474,9 @@ def fetch_movers():
     for ticker in NIFTY50:
         try:
             hist = clean_yf_df(yf.Ticker(ticker).history(period="2d"))
-            hist = hist[hist["Close"].notna() & (hist["Close"] > 0)]
             if hist.empty or len(hist) < 2:
                 continue
-            raw_close = hist["Close"]
-            if isinstance(raw_close, pd.DataFrame):
-                raw_close = raw_close.iloc[:, 0]
-            close = pd.Series(raw_close.to_numpy().flatten().astype(float), index=hist.index)
+            close = hist["Close"].squeeze()
             curr  = float(close.iloc[-1])
             prev  = float(close.iloc[-2])
             chg   = round(((curr - prev) / prev) * 100, 2)
@@ -783,8 +557,8 @@ Format as a numbered list with real fund names.
 End with a 2-line summary of the overall strategy.
 """
     try:
-        response = gemini_client.models.generate_content(
-            model=MODEL, contents=prompt)
+        model    = genai.GenerativeModel(MODEL)
+        response = model.generate_content(prompt)
         return response.text
     except Exception as e:
         return f"⚠️ Gemini error: {e}"
@@ -844,8 +618,8 @@ One sentence with specific price levels to watch.
 Under 300 words. Simple language. No generic disclaimers.
 """
     try:
-        response = gemini_client.models.generate_content(
-            model=MODEL, contents=prompt)
+        model    = genai.GenerativeModel(MODEL)
+        response = model.generate_content(prompt)
         return response.text
     except Exception as e:
         return f"⚠️ Gemini error: {e}"
@@ -875,8 +649,8 @@ Use simple language suitable for a retail investor.
 If the question is not related to this stock or markets, politely redirect.
 """
     try:
-        response = gemini_client.models.generate_content(
-            model=MODEL, contents=prompt)
+        model    = genai.GenerativeModel(MODEL)
+        response = model.generate_content(prompt)
         return response.text
     except Exception as e:
         return f"⚠️ Gemini error: {e}"
@@ -1419,7 +1193,7 @@ with tab_wishlist:
                         yf.Ticker(item["ticker"]).history(period="1d"))
                     if not live_hist.empty:
                         live      = round(
-                            float(pd.Series(live_hist["Close"].to_numpy().flatten().astype(float)).iloc[-1]), 2)
+                            float(live_hist["Close"].squeeze().iloc[-1]), 2)
                         delta     = round(live - item["price"], 2)
                         delta_pct = round(
                             (delta / item["price"]) * 100, 2)
