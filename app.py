@@ -909,6 +909,11 @@ with tab_stocks:
             else:
                 status.write(
                     "   → Tickertape unavailable, using price data only")
+                # ── TEMPORARY DEBUG — remove after checking ───────────────────────
+            st.write("**DEBUG — Tickertape SID:**", tt_sid)
+            st.write("**DEBUG — Fundamentals keys:**", list(tt_fundamentals.keys()) if tt_fundamentals else "EMPTY")
+            st.write("**DEBUG — Peers count:**", len(tt_peers) if tt_peers else "EMPTY")
+            st.write("**DEBUG — Shareholding:**", tt_shareholding)
 
             status.write("🤖 Running AI analysis with all indicators...")
             analysis = get_gemini_analysis(
