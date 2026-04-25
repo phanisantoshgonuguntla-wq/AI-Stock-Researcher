@@ -985,7 +985,7 @@ with tab_stocks:
             p1.metric("Buy Price",      f"₹{la['buy_price']:.2f}")
             p2.metric("Unrealised P&L", f"₹{pl:+.2f}", f"{pl_pct:+.2f}%")
 
-       # ── FUNDAMENTAL DATA PANEL ────────────────────────────────────────────
+        # ── FUNDAMENTAL DATA PANEL ────────────────────────────────────────────
         if la.get("tt_fundamentals"):
             st.subheader("📋 Fundamental Data")
             st.caption("Source: Tickertape — updated hourly")
