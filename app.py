@@ -134,19 +134,27 @@ def get_tickertape_sid(company_ticker: str) -> str | None:
     try:
         clean = company_ticker.replace(".NS", "").replace(".BO", "")
         r = requests.get(
-            f"{BASE}/search?text={clean}&type=stock",
+            f"{BASE}/search?text={clean}",          # ← removed &type=stock
             headers=TICKERTAPE_HEADERS, timeout=5,
         )
-        # ── DEBUG ─────────────────────────────────────────────────────────────
-        st.write("**TT Status code:**", r.status_code)
-        st.write("**TT Response:**", r.text[:300])
-        # ─────────────────────────────────────────────────────────────────────
+        if r.status_code != 200:
+            return None
         data    = r.json()
-        results = data.get("data", {}).get("stocks", [])
-        if results:
-            return results[0].get("sid")
-    except Exception as e:
-        st.write("**TT Exception:**", str(e))
+        # Search returns mixed results — find the first stock entry
+        results = (
+            data.get("data", {}).get("stocks", [])  # try stocks key first
+            or data.get("data", {}).get("equity", [])  # fallback key
+            or data.get("data", [])                    # bare list fallback
+        )
+        if isinstance(results, list) and results:
+            # If results is a list of dicts, get sid from first item
+            first = results[0]
+            if isinstance(first, dict):
+                return first.get("sid") or first.get("id")
+        elif isinstance(results, dict):
+            return results.get("sid") or results.get("id")
+    except Exception:
+        pass
     return None
 
 
@@ -185,6 +193,35 @@ def get_shareholding(sid: str) -> dict:
             headers=TICKERTAPE_HEADERS, timeout=5,
         )
         return r.json().get("data", {})
+    except Exception:
+        return {}
+def get_fundamentals_yf(ticker: str) -> dict:
+    """
+    Fallback fundamentals from yfinance .info
+    Works for most Nifty 50 stocks, unreliable for smaller caps.
+    """
+    try:
+        info = yf.Ticker(ticker).info
+        if not info or len(info) < 5:
+            return {}
+        return {
+            "pe":     round(float(info.get("trailingPE", 0)), 2)
+                      if info.get("trailingPE") else "N/A",
+            "pb":     round(float(info.get("priceToBook", 0)), 2)
+                      if info.get("priceToBook") else "N/A",
+            "roe":    f"{round(float(info.get('returnOnEquity', 0)) * 100, 2)}%"
+                      if info.get("returnOnEquity") else "N/A",
+            "dy":     f"{round(float(info.get('dividendYield', 0)) * 100, 2)}%"
+                      if info.get("dividendYield") else "N/A",
+            "mktcap": f"₹{round(float(info.get('marketCap', 0)) / 1e9, 2)}B"
+                      if info.get("marketCap") else "N/A",
+            "de":     round(float(info.get("debtToEquity", 0)), 2)
+                      if info.get("debtToEquity") else "N/A",
+            "eps":    round(float(info.get("trailingEps", 0)), 2)
+                      if info.get("trailingEps") else "N/A",
+            "revg":   f"{round(float(info.get('revenueGrowth', 0)) * 100, 2)}%"
+                      if info.get("revenueGrowth") else "N/A",
+        }
     except Exception:
         return {}
 
@@ -908,24 +945,22 @@ with tab_stocks:
             tt_fundamentals = get_fundamentals(tt_sid)  if tt_sid else {}
             tt_peers        = get_peers(tt_sid)          if tt_sid else []
             tt_shareholding = get_shareholding(tt_sid)   if tt_sid else {}
-            if tt_sid:
-                status.write("   → Fundamentals, peers & shareholding loaded")
+
+            # Fallback to yfinance if Tickertape unavailable
+            if not tt_fundamentals:
+                status.write("   → Tickertape unavailable, trying yfinance...")
+                tt_fundamentals = get_fundamentals_yf(ticker)
+                if tt_fundamentals:
+                    status.write("   → Fundamentals loaded from yfinance")
+                else:
+                    status.write("   → No fundamental data available")
             else:
-                status.write(
-                    "   → Tickertape unavailable, using price data only")
+                status.write("   → Fundamentals, peers & shareholding loaded")
 
             status.write("🤖 Running AI analysis with all indicators...")
             analysis = get_gemini_analysis(
                 raw, data, tech, news_items, buy_price)
             status.update(label="Done!", state="complete", expanded=False)
-
-        # ── DEBUG — outside status block so it actually renders ───────────────
-        st.write("**DEBUG — Tickertape SID:**", tt_sid)
-        st.write("**DEBUG — Fundamentals keys:**",
-                 list(tt_fundamentals.keys()) if tt_fundamentals else "EMPTY")
-        st.write("**DEBUG — Peers count:**",
-                 len(tt_peers) if tt_peers else "EMPTY")
-        st.write("**DEBUG — Shareholding:**", tt_shareholding)
 
         st.session_state.last_analysis = {
             "raw":             raw,
