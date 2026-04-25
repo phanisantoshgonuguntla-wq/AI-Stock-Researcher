@@ -61,12 +61,11 @@ if "chat_history"  not in st.session_state:
 # ── AUTO-DETECT BEST MODEL ────────────────────────────────────────────────────
 def get_best_model() -> str:
     preferred = [
-        "gemini-2.5-flash-lite",
-        "gemini-2.5-flash-lite-preview-06-17",
-        "gemini-2.5-flash",
-        "gemini-2.5-flash-preview-05-20",
-        "gemini-2.0-flash",
-        "gemini-1.5-flash",
+        "gemini-2.0-flash",        # 1500 RPD free — best choice
+        "gemini-2.0-flash-001",
+        "gemini-1.5-flash",        # 1500 RPD free fallback
+        "gemini-2.5-flash-lite",   # 20 RPD — last resort
+        "gemini-2.5-flash",        # 20 RPD — last resort
     ]
     try:
         available = [
@@ -116,6 +115,207 @@ def clean_yf_df(df: pd.DataFrame) -> pd.DataFrame:
         df.columns = df.columns.get_level_values(0)
     df = df.loc[:, ~df.columns.duplicated()]
     return df
+
+
+# ── TICKER MAP (no Gemini call needed) ───────────────────────────────────────
+TICKER_MAP = {
+    # IT
+    "tcs": "TCS.NS", "tata consultancy": "TCS.NS",
+    "tata consultancy services": "TCS.NS",
+    "infosys": "INFY.NS", "infy": "INFY.NS",
+    "wipro": "WIPRO.NS",
+    "hcl": "HCLTECH.NS", "hcltech": "HCLTECH.NS",
+    "hcl technologies": "HCLTECH.NS",
+    "tech mahindra": "TECHM.NS", "techm": "TECHM.NS",
+    "mphasis": "MPHASIS.NS",
+    "ltimindtree": "LTIM.NS", "lti": "LTIM.NS",
+    # Banks
+    "hdfc bank": "HDFCBANK.NS", "hdfcbank": "HDFCBANK.NS", "hdfc": "HDFCBANK.NS",
+    "icici bank": "ICICIBANK.NS", "icici": "ICICIBANK.NS",
+    "kotak": "KOTAKBANK.NS", "kotak bank": "KOTAKBANK.NS",
+    "kotak mahindra": "KOTAKBANK.NS",
+    "axis bank": "AXISBANK.NS", "axis": "AXISBANK.NS",
+    "sbi": "SBIN.NS", "state bank": "SBIN.NS",
+    "state bank of india": "SBIN.NS",
+    "indusind": "INDUSINDBK.NS", "indusind bank": "INDUSINDBK.NS",
+    "yes bank": "YESBANK.NS",
+    "bandhan": "BANDHANBNK.NS", "bandhan bank": "BANDHANBNK.NS",
+    "pnb": "PNB.NS", "punjab national bank": "PNB.NS",
+    "bank of baroda": "BANKBARODA.NS",
+    "canara bank": "CANBK.NS",
+    # FMCG
+    "hindustan unilever": "HINDUNILVR.NS", "hul": "HINDUNILVR.NS",
+    "itc": "ITC.NS",
+    "nestle": "NESTLEIND.NS", "nestle india": "NESTLEIND.NS",
+    "britannia": "BRITANNIA.NS",
+    "dabur": "DABUR.NS",
+    "marico": "MARICO.NS",
+    "godrej consumer": "GODREJCP.NS",
+    "colgate": "COLPAL.NS", "colgate palmolive": "COLPAL.NS",
+    "emami": "EMAMILTD.NS",
+    # Auto
+    "maruti": "MARUTI.NS", "maruti suzuki": "MARUTI.NS",
+    "tata motors": "TATAMOTORS.NS",
+    "bajaj auto": "BAJAJ-AUTO.NS",
+    "hero motocorp": "HEROMOTOCO.NS", "hero": "HEROMOTOCO.NS",
+    "eicher": "EICHERMOT.NS", "eicher motors": "EICHERMOT.NS",
+    "mahindra": "M&M.NS", "m&m": "M&M.NS",
+    "tvs motor": "TVSMOTOR.NS", "tvs": "TVSMOTOR.NS",
+    "ashok leyland": "ASHOKLEY.NS",
+    "bosch": "BOSCHLTD.NS",
+    # Pharma
+    "sun pharma": "SUNPHARMA.NS", "sun pharmaceutical": "SUNPHARMA.NS",
+    "dr reddy": "DRREDDY.NS", "dr reddys": "DRREDDY.NS",
+    "cipla": "CIPLA.NS",
+    "divis": "DIVISLAB.NS", "divis labs": "DIVISLAB.NS",
+    "apollo hospitals": "APOLLOHOSP.NS", "apollo": "APOLLOHOSP.NS",
+    "lupin": "LUPIN.NS",
+    "torrent pharma": "TORNTPHARM.NS",
+    "aurobindo": "AUROPHARMA.NS",
+    "biocon": "BIOCON.NS",
+    "alkem": "ALKEM.NS",
+    # Finance / Insurance
+    "bajaj finance": "BAJFINANCE.NS",
+    "bajaj finserv": "BAJAJFINSV.NS",
+    "hdfc life": "HDFCLIFE.NS",
+    "sbi life": "SBILIFE.NS",
+    "icici prudential": "ICICIPRULI.NS",
+    "muthoot": "MUTHOOTFIN.NS", "muthoot finance": "MUTHOOTFIN.NS",
+    "shriram finance": "SHRIRAMFIN.NS",
+    "cholamandalam": "CHOLAFIN.NS",
+    # Energy & Infra
+    "reliance": "RELIANCE.NS", "reliance industries": "RELIANCE.NS",
+    "ongc": "ONGC.NS",
+    "bpcl": "BPCL.NS",
+    "ioc": "IOC.NS", "indian oil": "IOC.NS",
+    "coal india": "COALINDIA.NS",
+    "ntpc": "NTPC.NS",
+    "power grid": "POWERGRID.NS",
+    "tata power": "TATAPOWER.NS",
+    "adani enterprises": "ADANIENT.NS",
+    "adani ports": "ADANIPORTS.NS",
+    "adani green": "ADANIGREEN.NS",
+    "adani total gas": "ATGL.NS",
+    "l&t": "LT.NS", "larsen": "LT.NS", "larsen toubro": "LT.NS",
+    "gail": "GAIL.NS",
+    "oil india": "OIL.NS",
+    "petronet": "PETRONET.NS",
+    # Metals & Mining
+    "tata steel": "TATASTEEL.NS",
+    "jsw steel": "JSWSTEEL.NS", "jsw": "JSWSTEEL.NS",
+    "hindalco": "HINDALCO.NS",
+    "vedanta": "VEDL.NS",
+    "nmdc": "NMDC.NS",
+    "sail": "SAIL.NS",
+    "nalco": "NATIONALUM.NS",
+    # Cement
+    "ultratech": "ULTRACEMCO.NS", "ultratech cement": "ULTRACEMCO.NS",
+    "shree cement": "SHREECEM.NS",
+    "grasim": "GRASIM.NS",
+    "ambuja": "AMBUJACEM.NS", "ambuja cements": "AMBUJACEM.NS",
+    "acc": "ACC.NS",
+    # Consumer & Retail
+    "asian paints": "ASIANPAINT.NS",
+    "titan": "TITAN.NS",
+    "dmart": "DMART.NS", "avenue supermarts": "DMART.NS",
+    "pidilite": "PIDILITIND.NS",
+    "havells": "HAVELLS.NS",
+    "voltas": "VOLTAS.NS",
+    "whirlpool": "WHIRLPOOL.NS",
+    "amber enterprises": "AMBER.NS",
+    "dixon": "DIXON.NS",
+    # Tech / Internet
+    "zomato": "ZOMATO.NS",
+    "paytm": "PAYTM.NS",
+    "nykaa": "NYKAA.NS",
+    "policybazaar": "POLICYBZR.NS",
+    "info edge": "NAUKRI.NS", "naukri": "NAUKRI.NS",
+    "indiamart": "INDIAMART.NS",
+    # Telecom
+    "bharti airtel": "BHARTIARTL.NS", "airtel": "BHARTIARTL.NS",
+    # Others
+    "tata consumer": "TATACONSUM.NS",
+    "irctc": "IRCTC.NS",
+    "mrf": "MRF.NS",
+    "page industries": "PAGEIND.NS",
+    "3m india": "3MINDIA.NS",
+    "siemens": "SIEMENS.NS",
+    "abb": "ABB.NS",
+    "cummins": "CUMMINSIND.NS",
+    "berger paints": "BERGEPAINT.NS",
+    "kansai nerolac": "KANSAINER.NS",
+    "trent": "TRENT.NS",
+    "varun beverages": "VBL.NS",
+    "jubilant foodworks": "JUBLFOOD.NS",
+    "godrej properties": "GODREJPROP.NS",
+    "dlf": "DLF.NS",
+    "oberoi realty": "OBEROIRLTY.NS",
+}
+
+
+def resolve_ticker(company_name: str, exchange: str = "NSE") -> str | None:
+    """
+    Resolve company name to NSE/BSE ticker.
+    Uses hardcoded map first (no Gemini quota used),
+    falls back to Gemini only for unknown companies.
+    """
+    raw = company_name.strip()
+
+    # Direct ticker entry — no lookup needed
+    if raw.upper().endswith((".NS", ".BO")):
+        return raw.upper()
+    if raw.strip().isdigit():
+        return f"{raw.strip()}.BO"
+
+    # Hardcoded map (case-insensitive)
+    key = raw.lower().strip()
+    suffix = ".NS" if exchange == "NSE" else ".BO"
+
+    if key in TICKER_MAP:
+        ticker = TICKER_MAP[key]
+        if exchange == "BSE":
+            ticker = ticker.replace(".NS", ".BO")
+        return ticker
+
+    # Partial match
+    for k, v in TICKER_MAP.items():
+        if key in k or k in key:
+            if exchange == "BSE":
+                return v.replace(".NS", ".BO")
+            return v
+
+    # Gemini fallback — only for companies not in the map
+    prompt = f"""You are a stock ticker database for Indian stock markets.
+Task: Find the exact NSE/BSE ticker symbol for the company below.
+Company: {company_name}
+Exchange: {exchange}
+Required suffix: {suffix}
+Reply with ONLY the ticker symbol. No explanation.
+Examples: WIPRO.NS RELIANCE.NS TCS.NS INFY.NS HDFCBANK.NS
+If unknown reply: UNKNOWN
+Ticker:"""
+    try:
+        model    = genai.GenerativeModel(MODEL)
+        response = model.generate_content(
+            prompt,
+            generation_config=genai.GenerationConfig(
+                max_output_tokens=200, temperature=0.0),
+        )
+        result = clean_ticker(response.text, suffix)
+        if result:
+            base = result.replace(".NS", "").replace(".BO", "")
+            if len(base) < 3:
+                retry = model.generate_content(
+                    f"Full NSE ticker for {company_name}? "
+                    f"Example: Wipro=WIPRO.NS. Just the ticker:",
+                    generation_config=genai.GenerationConfig(
+                        max_output_tokens=200, temperature=0.0),
+                )
+                result = clean_ticker(retry.text, suffix)
+        return result
+    except Exception as e:
+        st.warning(f"Ticker lookup error: {e}")
+        return None
 
 
 # ── TICKERTAPE ────────────────────────────────────────────────────────────────
@@ -312,43 +512,46 @@ def get_peers_yf(ticker: str) -> list[dict]:
     return peers
 
 
-# ── SHAREHOLDING (NSE India official data) ────────────────────────────────────
+# ── SHAREHOLDING (yfinance) ───────────────────────────────────────────────────
 @st.cache_data(ttl=86400)
 def get_shareholding_nse(ticker: str) -> dict:
+    """
+    Fetch shareholding pattern from yfinance major_holders.
+    Works reliably on Streamlit Cloud with no network restrictions.
+    """
     try:
-        symbol = ticker.replace(".NS", "").replace(".BO", "")
-        url    = (
-            f"https://www.nseindia.com/api/corporate-share-holdings-master"
-            f"?symbol={symbol}&market=equities"
-        )
-        headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                          "AppleWebKit/537.36 (KHTML, like Gecko) "
-                          "Chrome/120.0.0.0 Safari/537.36",
-            "Accept":          "application/json, text/plain, */*",
-            "Accept-Language": "en-US,en;q=0.9",
-            "Referer":         "https://www.nseindia.com/",
-        }
-        session = requests.Session()
-        session.get("https://www.nseindia.com", headers=headers, timeout=8)
-        r = session.get(url, headers=headers, timeout=8)
-        if r.status_code != 200:
+        asset   = yf.Ticker(ticker)
+        holders = asset.major_holders
+
+        if holders is None or holders.empty:
             return {}
-        data = r.json()
-        if not data:
-            return {}
-        latest = data[0] if isinstance(data, list) else data
-        return {
-            "promoter": round(float(
-                latest.get("promoterAndPromoterGroupTotal", 0)), 2),
-            "fii":      round(float(
-                latest.get("foreignPortfolioInvestorsTotal", 0)), 2),
-            "dii":      round(float(
-                latest.get("mutualFundsTotal", 0)), 2),
-            "public":   round(float(
-                latest.get("publicTotal", 0)), 2),
-            "quarter":  latest.get("date", ""),
-        }
+
+        data = {}
+        for _, row in holders.iterrows():
+            val   = row.iloc[0]
+            label = str(row.iloc[1]).lower()
+            if "insider" in label:
+                data["promoter"] = round(
+                    float(str(val).replace("%", "").strip()), 2)
+            elif "institution" in label:
+                data["fii"] = round(
+                    float(str(val).replace("%", "").strip()), 2)
+
+        if data:
+            promoter = data.get("promoter", 0)
+            fii      = data.get("fii", 0)
+            try:
+                public = round(100 - float(promoter) - float(fii), 2)
+            except Exception:
+                public = "N/A"
+            return {
+                "promoter": data.get("promoter", "N/A"),
+                "fii":      data.get("fii",      "N/A"),
+                "dii":      "N/A",
+                "public":   public,
+                "quarter":  "Latest available",
+            }
+        return {}
     except Exception:
         return {}
 
@@ -557,45 +760,6 @@ def get_technical_summary(hist) -> dict:
         "bb_lower":    last_bb_low,
         "bb_signal":   bb_signal,
     }
-
-
-# ── TICKER RESOLVER ───────────────────────────────────────────────────────────
-def resolve_ticker(company_name: str, exchange: str = "NSE") -> str | None:
-    suffix = ".NS" if exchange == "NSE" else ".BO"
-    prompt = f"""You are a stock ticker database for Indian stock markets.
-Task: Find the exact NSE/BSE ticker symbol for the company below.
-Company: {company_name}
-Exchange: {exchange}
-Required suffix: {suffix}
-Rules:
-- Reply with ONLY the complete ticker symbol including the suffix
-- Do not truncate or shorten the ticker
-- Do not add any explanation or extra text
-Examples: WIPRO.NS RELIANCE.NS HDFCBANK.NS TCS.NS INFY.NS SBIN.NS ZOMATO.NS
-If truly unknown reply: UNKNOWN
-Complete ticker symbol for {company_name}:"""
-    try:
-        model    = genai.GenerativeModel(MODEL)
-        response = model.generate_content(
-            prompt,
-            generation_config=genai.GenerationConfig(
-                max_output_tokens=200, temperature=0.0),
-        )
-        result = clean_ticker(response.text, suffix)
-        if result:
-            base = result.replace(".NS", "").replace(".BO", "")
-            if len(base) < 3:
-                retry = model.generate_content(
-                    f"Write the FULL NSE ticker for {company_name} ending in "
-                    f"{suffix}. Example: Wipro = WIPRO.NS. Just the ticker:",
-                    generation_config=genai.GenerationConfig(
-                        max_output_tokens=200, temperature=0.0),
-                )
-                result = clean_ticker(retry.text, suffix)
-        return result
-    except Exception as e:
-        st.warning(f"Ticker lookup error: {e}")
-        return None
 
 
 # ── STOCK DATA ────────────────────────────────────────────────────────────────
@@ -1083,11 +1247,12 @@ with tab_stocks:
                 if tt_peers:
                     status.write(f"   → {len(tt_peers)} peer(s) loaded")
 
-            tt_shareholding = get_shareholding_nse(ticker)
-            if tt_shareholding:
-                status.write("   → Shareholding pattern loaded from NSE")
-            else:
-                status.write("   → Shareholding data unavailable")
+            if not tt_shareholding:
+                tt_shareholding = get_shareholding_nse(ticker)
+                if tt_shareholding:
+                    status.write("   → Shareholding pattern loaded")
+                else:
+                    status.write("   → Shareholding data unavailable")
 
             status.write("🤖 Running AI analysis with all indicators...")
             analysis = get_gemini_analysis(
@@ -1213,7 +1378,7 @@ with tab_stocks:
             if latest:
                 quarter = latest.get("quarter", "")
                 st.caption(
-                    f"Source: NSE India official data"
+                    "Source: yfinance"
                     + (f" — {quarter}" if quarter else "")
                 )
                 s1, s2, s3, s4 = st.columns(4)
@@ -1222,30 +1387,44 @@ with tab_stocks:
                 dii      = latest.get("dii",      "N/A")
                 public   = latest.get("public",   "N/A")
 
-                s1.metric("Promoter", f"{promoter}%" if promoter != "N/A" else "N/A")
-                s2.metric("FII",      f"{fii}%"      if fii      != "N/A" else "N/A")
-                s3.metric("DII",      f"{dii}%"      if dii      != "N/A" else "N/A")
-                s4.metric("Public",   f"{public}%"   if public   != "N/A" else "N/A")
+                s1.metric("Promoter / Insider",
+                          f"{promoter}%" if promoter != "N/A" else "N/A")
+                s2.metric("FII / Institution",
+                          f"{fii}%"      if fii      != "N/A" else "N/A")
+                s3.metric("DII",
+                          f"{dii}%"      if dii      != "N/A" else "N/A")
+                s4.metric("Public",
+                          f"{public}%"   if public   != "N/A" else "N/A")
 
                 try:
-                    labels = ["Promoter", "FII", "DII", "Public"]
-                    values = [
-                        float(promoter), float(fii),
-                        float(dii),      float(public),
-                    ]
-                    fig_pie = go.Figure(go.Pie(
-                        labels=labels, values=values,
-                        hole=0.4,
-                        marker_colors=[
-                            "#3498db", "#e74c3c", "#2ecc71", "#f39c12"],
-                    ))
-                    fig_pie.update_layout(
-                        height=300,
-                        margin=dict(l=0, r=0, t=20, b=0),
-                        paper_bgcolor="rgba(0,0,0,0)",
-                        showlegend=True,
-                    )
-                    st.plotly_chart(fig_pie, use_container_width=True)
+                    plot_labels = []
+                    plot_values = []
+                    for lbl, val in [
+                        ("Promoter", promoter),
+                        ("FII", fii),
+                        ("Public", public),
+                    ]:
+                        if val != "N/A":
+                            plot_labels.append(lbl)
+                            plot_values.append(float(val))
+
+                    if plot_labels:
+                        fig_pie = go.Figure(go.Pie(
+                            labels=plot_labels,
+                            values=plot_values,
+                            hole=0.4,
+                            marker_colors=[
+                                "#3498db", "#e74c3c",
+                                "#2ecc71", "#f39c12"
+                            ][:len(plot_labels)],
+                        ))
+                        fig_pie.update_layout(
+                            height=300,
+                            margin=dict(l=0, r=0, t=20, b=0),
+                            paper_bgcolor="rgba(0,0,0,0)",
+                            showlegend=True,
+                        )
+                        st.plotly_chart(fig_pie, use_container_width=True)
                 except Exception:
                     pass
             st.divider()
