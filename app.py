@@ -61,8 +61,11 @@ if "chat_history"  not in st.session_state:
 # ── AUTO-DETECT BEST MODEL ────────────────────────────────────────────────────
 def get_best_model() -> str:
     preferred = [
-        "gemini-2.5-flash-lite",   # 20 RPD — your primary model
-        "gemini-2.5-flash",        # 20 RPD — fallback
+        "gemini-2.0-flash",        # 1500 RPD free — best choice
+        "gemini-2.0-flash-001",
+        "gemini-1.5-flash",        # 1500 RPD free fallback
+        "gemini-2.5-flash-lite",   # 20 RPD — last resort
+        "gemini-2.5-flash",        # 20 RPD — last resort
     ]
     try:
         available = [
@@ -75,9 +78,10 @@ def get_best_model() -> str:
                 return model
     except Exception:
         pass
-    return "gemini-2.5-flash-lite"
+    return "gemini-1.5-flash"
 
-    MODEL = get_best_model()
+MODEL = get_best_model()
+
 
 # ── HELPERS ───────────────────────────────────────────────────────────────────
 def strip_html(text: str) -> str:
@@ -512,8 +516,8 @@ def get_peers_yf(ticker: str) -> list[dict]:
 @st.cache_data(ttl=86400)
 def get_shareholding_nse(ticker: str) -> dict:
     """
-    Fetch shareholding from yfinance major_holders.
-    Handles both old and new yfinance DataFrame structures.
+    Fetch shareholding pattern from yfinance major_holders.
+    Works reliably on Streamlit Cloud with no network restrictions.
     """
     try:
         asset   = yf.Ticker(ticker)
@@ -522,47 +526,32 @@ def get_shareholding_nse(ticker: str) -> dict:
         if holders is None or holders.empty:
             return {}
 
-        # Convert to dict regardless of column structure
-        # yfinance returns either 2 or 3 columns depending on version
-        data_dict = {}
+        data = {}
         for _, row in holders.iterrows():
-            row_values = row.tolist()
-            if len(row_values) >= 2:
-                val   = str(row_values[0]).replace("%", "").strip()
-                label = str(row_values[-1]).lower()   # last col is always label
-                try:
-                    float_val = round(float(val), 2)
-                    if any(x in label for x in ["insider", "promoter"]):
-                        data_dict["promoter"] = float_val
-                    elif any(x in label for x in ["institution", "fii", "foreign"]):
-                        data_dict["fii"] = float_val
-                    elif any(x in label for x in ["float", "public"]):
-                        data_dict["public"] = float_val
-                except ValueError:
-                    continue
+            val   = row.iloc[0]
+            label = str(row.iloc[1]).lower()
+            if "insider" in label:
+                data["promoter"] = round(
+                    float(str(val).replace("%", "").strip()), 2)
+            elif "institution" in label:
+                data["fii"] = round(
+                    float(str(val).replace("%", "").strip()), 2)
 
-        if not data_dict:
-            return {}
-
-        promoter = data_dict.get("promoter", "N/A")
-        fii      = data_dict.get("fii",      "N/A")
-        public   = data_dict.get("public",   "N/A")
-
-        # Calculate public if missing
-        if public == "N/A" and promoter != "N/A" and fii != "N/A":
+        if data:
+            promoter = data.get("promoter", 0)
+            fii      = data.get("fii", 0)
             try:
                 public = round(100 - float(promoter) - float(fii), 2)
             except Exception:
-                pass
-
-        return {
-            "promoter": promoter,
-            "fii":      fii,
-            "dii":      "N/A",
-            "public":   public,
-            "quarter":  "Latest available (yfinance)",
-        }
-
+                public = "N/A"
+            return {
+                "promoter": data.get("promoter", "N/A"),
+                "fii":      data.get("fii",      "N/A"),
+                "dii":      "N/A",
+                "public":   public,
+                "quarter":  "Latest available",
+            }
+        return {}
     except Exception:
         return {}
 
@@ -875,7 +864,7 @@ NIFTY50 = [
 @st.cache_data(ttl=900)
 def fetch_movers():
     results = []
-    for ticker in NIFTY50[:20]:   # ← temporarily limit to 20 stocks
+    for ticker in NIFTY50:
         try:
             hist = clean_yf_df(yf.Ticker(ticker).history(period="2d"))
             if hist.empty or len(hist) < 2:
@@ -1092,11 +1081,6 @@ def send_wishlist_email(to_email: str, wishlist: list[dict]) -> bool:
 with st.sidebar:
     st.header("📈 AI Stock Advisor")
     st.caption(f"Model: `{MODEL}`")
-
-    st.divider()
-    st.caption(
-        "**How to use:**\n\n"
-    )
     st.divider()
     st.caption(
         "**How to use:**\n\n"
