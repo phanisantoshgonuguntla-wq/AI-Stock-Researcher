@@ -61,9 +61,9 @@ if "chat_history"  not in st.session_state:
 # ── AUTO-DETECT BEST MODEL ────────────────────────────────────────────────────
 def get_best_model() -> str:
     preferred = [
-        "gemini-2.0-flash",
+        "gemini-1.5-flash",        # most reliably available on AI Studio free tier
+        "gemini-2.0-flash",        # 1500 RPD when properly enabled
         "gemini-2.0-flash-001",
-        "gemini-1.5-flash",
         "gemini-2.5-flash-lite",
         "gemini-2.5-flash",
     ]
@@ -78,7 +78,7 @@ def get_best_model() -> str:
                 return model
     except Exception:
         pass
-    return "gemini-1.5-flash"   # safe instant fallback
+    return "gemini-1.5-flash"
 
 MODEL = get_best_model()
 
@@ -516,8 +516,8 @@ def get_peers_yf(ticker: str) -> list[dict]:
 @st.cache_data(ttl=86400)
 def get_shareholding_nse(ticker: str) -> dict:
     """
-    Fetch shareholding pattern from yfinance major_holders.
-    Works reliably on Streamlit Cloud with no network restrictions.
+    Fetch shareholding from yfinance major_holders.
+    Handles both old and new yfinance DataFrame structures.
     """
     try:
         asset   = yf.Ticker(ticker)
@@ -526,32 +526,47 @@ def get_shareholding_nse(ticker: str) -> dict:
         if holders is None or holders.empty:
             return {}
 
-        data = {}
+        # Convert to dict regardless of column structure
+        # yfinance returns either 2 or 3 columns depending on version
+        data_dict = {}
         for _, row in holders.iterrows():
-            val   = row.iloc[0]
-            label = str(row.iloc[1]).lower()
-            if "insider" in label:
-                data["promoter"] = round(
-                    float(str(val).replace("%", "").strip()), 2)
-            elif "institution" in label:
-                data["fii"] = round(
-                    float(str(val).replace("%", "").strip()), 2)
+            row_values = row.tolist()
+            if len(row_values) >= 2:
+                val   = str(row_values[0]).replace("%", "").strip()
+                label = str(row_values[-1]).lower()   # last col is always label
+                try:
+                    float_val = round(float(val), 2)
+                    if any(x in label for x in ["insider", "promoter"]):
+                        data_dict["promoter"] = float_val
+                    elif any(x in label for x in ["institution", "fii", "foreign"]):
+                        data_dict["fii"] = float_val
+                    elif any(x in label for x in ["float", "public"]):
+                        data_dict["public"] = float_val
+                except ValueError:
+                    continue
 
-        if data:
-            promoter = data.get("promoter", 0)
-            fii      = data.get("fii", 0)
+        if not data_dict:
+            return {}
+
+        promoter = data_dict.get("promoter", "N/A")
+        fii      = data_dict.get("fii",      "N/A")
+        public   = data_dict.get("public",   "N/A")
+
+        # Calculate public if missing
+        if public == "N/A" and promoter != "N/A" and fii != "N/A":
             try:
                 public = round(100 - float(promoter) - float(fii), 2)
             except Exception:
-                public = "N/A"
-            return {
-                "promoter": data.get("promoter", "N/A"),
-                "fii":      data.get("fii",      "N/A"),
-                "dii":      "N/A",
-                "public":   public,
-                "quarter":  "Latest available",
-            }
-        return {}
+                pass
+
+        return {
+            "promoter": promoter,
+            "fii":      fii,
+            "dii":      "N/A",
+            "public":   public,
+            "quarter":  "Latest available (yfinance)",
+        }
+
     except Exception:
         return {}
 
