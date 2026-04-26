@@ -1096,6 +1096,24 @@ def send_wishlist_email(to_email: str, wishlist: list[dict]) -> bool:
 with st.sidebar:
     st.header("📈 AI Stock Advisor")
     st.caption(f"Model: `{MODEL}`")
+
+    # ── TEMPORARY: check available models ────────────────────────────────────
+    try:
+        available_models = [
+            m.name.replace("models/", "")
+            for m in genai.list_models()
+            if "generateContent" in m.supported_generation_methods
+            and "flash" in m.name
+        ]
+        st.caption(f"Available flash models: {available_models}")
+    except Exception as e:
+        st.caption(f"Model list error: {e}")
+    # ─────────────────────────────────────────────────────────────────────────
+
+    st.divider()
+    st.caption(
+        "**How to use:**\n\n"
+        
     st.divider()
     st.caption(
         "**How to use:**\n\n"
