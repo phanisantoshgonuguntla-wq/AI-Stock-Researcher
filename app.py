@@ -61,11 +61,11 @@ if "chat_history"  not in st.session_state:
 # ── AUTO-DETECT BEST MODEL ────────────────────────────────────────────────────
 def get_best_model() -> str:
     preferred = [
-        "gemini-2.0-flash",        # 1500 RPD free — best choice
+        "gemini-2.0-flash",
         "gemini-2.0-flash-001",
-        "gemini-1.5-flash",        # 1500 RPD free fallback
-        "gemini-2.5-flash-lite",   # 20 RPD — last resort
-        "gemini-2.5-flash",        # 20 RPD — last resort
+        "gemini-1.5-flash",
+        "gemini-2.5-flash-lite",
+        "gemini-2.5-flash",
     ]
     try:
         available = [
@@ -78,7 +78,7 @@ def get_best_model() -> str:
                 return model
     except Exception:
         pass
-    return "gemini-1.5-flash"
+    return "gemini-1.5-flash"   # safe instant fallback
 
 MODEL = get_best_model()
 
@@ -864,7 +864,7 @@ NIFTY50 = [
 @st.cache_data(ttl=900)
 def fetch_movers():
     results = []
-    for ticker in NIFTY50:
+    for ticker in NIFTY50[:20]:   # ← temporarily limit to 20 stocks
         try:
             hist = clean_yf_df(yf.Ticker(ticker).history(period="2d"))
             if hist.empty or len(hist) < 2:
