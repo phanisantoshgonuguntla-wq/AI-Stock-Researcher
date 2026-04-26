@@ -61,11 +61,13 @@ if "chat_history"  not in st.session_state:
 # ── AUTO-DETECT BEST MODEL ────────────────────────────────────────────────────
 def get_best_model() -> str:
     preferred = [
-        "gemini-1.5-flash",        # most reliably available on AI Studio free tier
-        "gemini-2.0-flash",        # 1500 RPD when properly enabled
+        "gemini-2.0-flash-lite",      # most generous free tier — best for high volume
+        "gemini-2.0-flash-lite-001",
+        "gemini-2.0-flash",           # 1500 RPD
         "gemini-2.0-flash-001",
-        "gemini-2.5-flash-lite",
+        "gemini-2.5-flash-lite",      # newer but lower quota
         "gemini-2.5-flash",
+        "gemini-1.5-flash",           # fallback
     ]
     try:
         available = [
@@ -78,7 +80,7 @@ def get_best_model() -> str:
                 return model
     except Exception:
         pass
-    return "gemini-1.5-flash"
+    return "gemini-2.0-flash-lite"
 
 MODEL = get_best_model()
 
@@ -1096,19 +1098,6 @@ def send_wishlist_email(to_email: str, wishlist: list[dict]) -> bool:
 with st.sidebar:
     st.header("📈 AI Stock Advisor")
     st.caption(f"Model: `{MODEL}`")
-
-    # ── TEMPORARY: check available models ────────────────────────────────────
-    try:
-        available_models = [
-            m.name.replace("models/", "")
-            for m in genai.list_models()
-            if "generateContent" in m.supported_generation_methods
-            and "flash" in m.name
-        ]
-        st.caption(f"Available flash models: {available_models}")
-    except Exception as e:
-        st.caption(f"Model list error: {e}")
-    # ─────────────────────────────────────────────────────────────────────────
 
     st.divider()
     st.caption(
