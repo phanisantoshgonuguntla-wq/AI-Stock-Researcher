@@ -61,11 +61,8 @@ if "chat_history"  not in st.session_state:
 # ── AUTO-DETECT BEST MODEL ────────────────────────────────────────────────────
 def get_best_model() -> str:
     preferred = [
-        "gemini-2.0-flash",        # 1500 RPD free — best choice
-        "gemini-2.0-flash-001",
-        "gemini-1.5-flash",        # 1500 RPD free fallback
-        "gemini-2.5-flash-lite",   # 20 RPD — last resort
-        "gemini-2.5-flash",        # 20 RPD — last resort
+        "gemini-2.5-flash-lite",   # 20 RPD — your primary model
+        "gemini-2.5-flash",        # 20 RPD — fallback
     ]
     try:
         available = [
@@ -78,7 +75,7 @@ def get_best_model() -> str:
                 return model
     except Exception:
         pass
-    return "gemini-1.5-flash"
+    return "gemini-2.5-flash-lite"
 
 MODEL = get_best_model()
 
