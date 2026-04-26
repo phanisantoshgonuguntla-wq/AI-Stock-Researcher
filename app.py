@@ -87,7 +87,6 @@ def get_gemini_analysis(
 
     return "⚠️ All Gemini models have exceeded their quota. Please try again tomorrow or check your API key at aistudio.google.com/apikey."
 
-MODEL = get_best_model()
 
 
 # ── HELPERS ───────────────────────────────────────────────────────────────────
