@@ -1113,7 +1113,7 @@ with st.sidebar:
     st.divider()
     st.caption(
         "**How to use:**\n\n"
-        
+    )
     st.divider()
     st.caption(
         "**How to use:**\n\n"
