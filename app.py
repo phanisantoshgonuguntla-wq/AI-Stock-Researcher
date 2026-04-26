@@ -1649,38 +1649,526 @@ with tab_simulator:
 # ════════════════════════════════════════════════════════════════════════════════
 with tab_mf:
     st.subheader("💰 Mutual Fund Advisor")
-    st.caption("Get 10 personalised fund recommendations based on your profile.")
 
-    mf1, mf2 = st.columns(2)
-    with mf1:
-        inv_type = st.radio("Investment type", ["SIP", "Lump Sum"],
-                            horizontal=True)
-        amount   = st.number_input(
-            "Amount (₹)" + (" per month" if inv_type == "SIP" else " one-time"),
-            min_value=500.0, step=500.0, value=5000.0,
-        )
-    with mf2:
-        risk = st.select_slider(
-            "Risk appetite",
-            options=["Very Low", "Low", "Moderate", "High", "Very High"],
-            value="Moderate",
-        )
-        tenure = st.slider(
-            "Investment tenure (years)", 1,
-            30 if inv_type == "SIP" else 20, 5,
-        )
+    mf_mode = st.radio(
+        "What would you like to do?",
+        ["🔍 Get Fund Recommendations", "⚖️ Compare Two Funds"],
+        horizontal=True,
+    )
+    st.divider()
 
-    if st.button("Get Fund Recommendations 🔍", type="primary"):
-        with st.spinner("Getting personalised fund recommendations..."):
-            mf_result = get_mf_recommendations(inv_type, tenure, risk, amount)
-        st.subheader("📋 Your Recommended Funds")
-        st.markdown(mf_result)
-        st.divider()
+    # ── MODE 1: AI RECOMMENDATIONS ───────────────────────────────────────────
+    if mf_mode == "🔍 Get Fund Recommendations":
+        st.caption("Get 10 personalised fund recommendations based on your profile.")
+
+        mf1, mf2 = st.columns(2)
+        with mf1:
+            inv_type = st.radio(
+                "Investment type", ["SIP", "Lump Sum"], horizontal=True,
+                key="rec_inv_type")
+            amount   = st.number_input(
+                "Amount (₹)" + (" per month" if inv_type == "SIP" else " one-time"),
+                min_value=500.0, step=500.0, value=5000.0, key="rec_amount",
+            )
+        with mf2:
+            risk = st.select_slider(
+                "Risk appetite",
+                options=["Very Low", "Low", "Moderate", "High", "Very High"],
+                value="Moderate", key="rec_risk",
+            )
+            tenure = st.slider(
+                "Investment tenure (years)", 1,
+                30 if inv_type == "SIP" else 20, 5, key="rec_tenure",
+            )
+
+        if st.button("Get Fund Recommendations 🔍", type="primary",
+                     key="rec_btn"):
+            with st.spinner("Getting personalised fund recommendations..."):
+                mf_result = get_mf_recommendations(inv_type, tenure, risk, amount)
+            st.subheader("📋 Your Recommended Funds")
+            st.markdown(mf_result)
+            st.divider()
+            st.caption(
+                "AI-generated based on historical data. "
+                "Past performance is not a guarantee of future returns. "
+                "Not SEBI-registered financial advice."
+            )
+
+    # ── MODE 2: COMPARE TWO FUNDS ─────────────────────────────────────────────
+    else:
         st.caption(
-            "AI-generated based on historical data. "
-            "Past performance is not a guarantee of future returns. "
-            "Not SEBI-registered financial advice."
+            "Compare two mutual funds side by side — returns, NAV chart, "
+            "SIP vs Lump Sum simulator, and AI recommendation."
         )
+
+        # ── FUND SEARCH HELPER ────────────────────────────────────────────────
+        @st.cache_data(ttl=86400)
+        def search_fund(query: str) -> list[dict]:
+            """Search AMFI for funds matching the query via mftool."""
+            try:
+                from mftool import Mftool
+                mf   = Mftool()
+                all_schemes = mf.get_scheme_codes(as_json=False)
+                query_lower = query.lower()
+                results = []
+                for code, name in all_schemes.items():
+                    if query_lower in name.lower():
+                        results.append({"code": code, "name": name})
+                    if len(results) >= 10:
+                        break
+                return results
+            except Exception:
+                return []
+
+        @st.cache_data(ttl=3600)
+        def get_fund_nav_history(scheme_code: str) -> pd.DataFrame:
+            """Fetch full NAV history for a scheme code."""
+            try:
+                from mftool import Mftool
+                mf   = Mftool()
+                data = mf.get_scheme_historical_nav(scheme_code, as_json=False)
+                if not data or "data" not in data:
+                    return pd.DataFrame()
+                records = data["data"]
+                df = pd.DataFrame(records)
+                df.columns = [c.lower() for c in df.columns]
+                df["date"] = pd.to_datetime(df["date"], format="%d-%m-%Y",
+                                            errors="coerce")
+                df["nav"]  = pd.to_numeric(df["nav"], errors="coerce")
+                df = df.dropna().sort_values("date").reset_index(drop=True)
+                return df
+            except Exception:
+                return pd.DataFrame()
+
+        @st.cache_data(ttl=3600)
+        def get_fund_details(scheme_code: str) -> dict:
+            """Fetch fund metadata."""
+            try:
+                from mftool import Mftool
+                mf = Mftool()
+                return mf.get_scheme_details(scheme_code, as_json=False) or {}
+            except Exception:
+                return {}
+
+        def calculate_returns(df: pd.DataFrame) -> dict:
+            """Calculate 1Y, 3Y, 5Y CAGR and other metrics from NAV history."""
+            if df.empty or len(df) < 2:
+                return {}
+
+            latest_nav  = df["nav"].iloc[-1]
+            latest_date = df["date"].iloc[-1]
+            results     = {"latest_nav": round(latest_nav, 4)}
+
+            for label, years in [("1Y", 1), ("3Y", 3), ("5Y", 5)]:
+                target_date = latest_date - timedelta(days=int(years * 365.25))
+                past = df[df["date"] <= target_date]
+                if past.empty:
+                    results[label] = None
+                    continue
+                past_nav = past["nav"].iloc[-1]
+                if past_nav and past_nav > 0:
+                    cagr = ((latest_nav / past_nav) ** (1 / years) - 1) * 100
+                    results[label] = round(cagr, 2)
+                else:
+                    results[label] = None
+
+            # Volatility — std dev of daily returns (annualised)
+            df["daily_ret"] = df["nav"].pct_change()
+            vol = df["daily_ret"].std() * (252 ** 0.5) * 100
+            results["volatility"] = round(vol, 2) if not np.isnan(vol) else None
+
+            # Max drawdown
+            roll_max  = df["nav"].cummax()
+            drawdown  = (df["nav"] - roll_max) / roll_max * 100
+            results["max_drawdown"] = round(drawdown.min(), 2)
+
+            return results
+
+        def simulate_sip(df: pd.DataFrame, monthly: float,
+                         years: int) -> dict | None:
+            """Simulate SIP returns over given years."""
+            if df.empty:
+                return None
+            end_date   = df["date"].iloc[-1]
+            start_date = end_date - timedelta(days=int(years * 365.25))
+            period_df  = df[df["date"] >= start_date].copy()
+            if period_df.empty:
+                return None
+
+            # One investment per month on the first available NAV
+            period_df["month"] = period_df["date"].dt.to_period("M")
+            monthly_df = period_df.groupby("month").first().reset_index()
+
+            total_invested = 0.0
+            total_units    = 0.0
+            for _, row in monthly_df.iterrows():
+                units           = monthly / row["nav"]
+                total_units    += units
+                total_invested += monthly
+
+            final_nav    = df["nav"].iloc[-1]
+            current_val  = total_units * final_nav
+            total_return = ((current_val - total_invested) / total_invested) * 100
+            months       = len(monthly_df)
+            years_actual = months / 12
+            cagr = ((current_val / total_invested) ** (1 / years_actual) - 1) * 100 \
+                   if years_actual > 0 else 0
+
+            return {
+                "invested":     round(total_invested, 2),
+                "current_val":  round(current_val, 2),
+                "total_return": round(total_return, 2),
+                "cagr":         round(cagr, 2),
+                "months":       months,
+            }
+
+        def simulate_lumpsum(df: pd.DataFrame, amount: float,
+                             years: int) -> dict | None:
+            """Simulate lump sum investment over given years."""
+            if df.empty:
+                return None
+            end_date   = df["date"].iloc[-1]
+            start_date = end_date - timedelta(days=int(years * 365.25))
+            past = df[df["date"] >= start_date]
+            if past.empty:
+                return None
+
+            buy_nav   = past["nav"].iloc[0]
+            sell_nav  = df["nav"].iloc[-1]
+            units     = amount / buy_nav
+            curr_val  = units * sell_nav
+            ret_pct   = ((curr_val - amount) / amount) * 100
+            cagr      = ((curr_val / amount) ** (1 / years) - 1) * 100
+
+            return {
+                "invested":     round(amount, 2),
+                "current_val":  round(curr_val, 2),
+                "total_return": round(ret_pct, 2),
+                "cagr":         round(cagr, 2),
+            }
+
+        def get_mf_comparison_analysis(
+            fund_a_name: str, fund_b_name: str,
+            ret_a: dict, ret_b: dict,
+            sip_a: dict | None, sip_b: dict | None,
+            ls_a: dict | None, ls_b: dict | None,
+            tenure: int, monthly_amount: float, lumpsum_amount: float,
+        ) -> str:
+            """Ask Gemini to compare two funds and give a recommendation."""
+
+            def fmt(d, key):
+                val = d.get(key) if d else None
+                return f"{val}%" if val is not None else "N/A"
+
+            prompt = f"""You are a SEBI-registered mutual fund advisor comparing two Indian mutual funds for a retail investor.
+
+=== FUND A: {fund_a_name} ===
+1Y Return  : {fmt(ret_a, '1Y')}
+3Y CAGR    : {fmt(ret_a, '3Y')}
+5Y CAGR    : {fmt(ret_a, '5Y')}
+Volatility : {fmt(ret_a, 'volatility')}
+Max Drawdown: {fmt(ret_a, 'max_drawdown')}
+SIP Result ({tenure}Y, ₹{monthly_amount:,.0f}/mo): Invested ₹{sip_a['invested']:,.0f} → ₹{sip_a['current_val']:,.0f} (CAGR {sip_a['cagr']}%) if available else N/A
+Lump Sum Result ({tenure}Y, ₹{lumpsum_amount:,.0f}): Invested ₹{ls_a['invested']:,.0f} → ₹{ls_a['current_val']:,.0f} (CAGR {ls_a['cagr']}%) if available else N/A
+
+=== FUND B: {fund_b_name} ===
+1Y Return  : {fmt(ret_b, '1Y')}
+3Y CAGR    : {fmt(ret_b, '3Y')}
+5Y CAGR    : {fmt(ret_b, '5Y')}
+Volatility : {fmt(ret_b, 'volatility')}
+Max Drawdown: {fmt(ret_b, 'max_drawdown')}
+SIP Result ({tenure}Y, ₹{monthly_amount:,.0f}/mo): Invested ₹{sip_b['invested']:,.0f} → ₹{sip_b['current_val']:,.0f} (CAGR {sip_b['cagr']}%) if available else N/A
+Lump Sum Result ({tenure}Y, ₹{lumpsum_amount:,.0f}): Invested ₹{ls_b['invested']:,.0f} → ₹{ls_b['current_val']:,.0f} (CAGR {ls_b['cagr']}%) if available else N/A
+
+Give a structured comparison:
+
+**Overall Winner: [Fund A name] or [Fund B name]**
+
+**Returns comparison** (2-3 bullets — which fund wins on what timeframe)
+
+**Risk comparison** (2 bullets — volatility and drawdown)
+
+**SIP recommendation** (1 bullet — which fund suits SIP better and why)
+
+**Lump Sum recommendation** (1 bullet — which fund suits lump sum better and why)
+
+**Final verdict** — one clear sentence: which fund to choose and for what investor profile.
+
+Under 250 words. Simple language. Be decisive. No generic disclaimers.
+"""
+            models_to_try = ["gemini-2.5-flash-lite", "gemini-2.5-flash",
+                             "gemini-2.0-flash-lite", "gemini-2.0-flash"]
+            for model_name in models_to_try:
+                try:
+                    model    = genai.GenerativeModel(model_name)
+                    response = model.generate_content(prompt)
+                    return response.text
+                except Exception as e:
+                    if "429" in str(e):
+                        continue
+                    return f"⚠️ Gemini error: {e}"
+            return "⚠️ Quota exhausted. Comparison data above is still valid — check returns and pick the higher CAGR fund for your tenure."
+
+        # ── FUND SEARCH UI ────────────────────────────────────────────────────
+        st.markdown("#### Search and Select Funds")
+        c1, c2 = st.columns(2)
+
+        with c1:
+            st.markdown("**Fund A**")
+            query_a   = st.text_input("Search Fund A",
+                                      placeholder="e.g. Mirae Large Cap",
+                                      key="query_a")
+            scheme_a  = None
+            name_a    = ""
+            if query_a.strip():
+                results_a = search_fund(query_a.strip())
+                if results_a:
+                    options_a = {r["name"]: r["code"] for r in results_a}
+                    chosen_a  = st.selectbox("Select Fund A", list(options_a.keys()),
+                                             key="sel_a")
+                    scheme_a  = options_a[chosen_a]
+                    name_a    = chosen_a
+                else:
+                    st.warning("No funds found. Try a different search term.")
+
+        with c2:
+            st.markdown("**Fund B**")
+            query_b   = st.text_input("Search Fund B",
+                                      placeholder="e.g. Parag Parikh Flexi",
+                                      key="query_b")
+            scheme_b  = None
+            name_b    = ""
+            if query_b.strip():
+                results_b = search_fund(query_b.strip())
+                if results_b:
+                    options_b = {r["name"]: r["code"] for r in results_b}
+                    chosen_b  = st.selectbox("Select Fund B", list(options_b.keys()),
+                                             key="sel_b")
+                    scheme_b  = options_b[chosen_b]
+                    name_b    = chosen_b
+                else:
+                    st.warning("No funds found. Try a different search term.")
+
+        # ── SIMULATOR SETTINGS ────────────────────────────────────────────────
+        st.markdown("#### Simulation Settings")
+        s1, s2, s3 = st.columns(3)
+        with s1:
+            comp_tenure = st.slider("Investment tenure (years)", 1, 20, 5,
+                                    key="comp_tenure")
+        with s2:
+            monthly_sip = st.number_input("Monthly SIP amount (₹)",
+                                          min_value=500.0, step=500.0,
+                                          value=5000.0, key="comp_sip")
+        with s3:
+            lumpsum_amt = st.number_input("Lump Sum amount (₹)",
+                                          min_value=1000.0, step=1000.0,
+                                          value=100000.0, key="comp_ls")
+
+        compare_btn = st.button("Compare Funds ⚖️", type="primary",
+                                key="compare_btn",
+                                disabled=not (scheme_a and scheme_b))
+
+        if not scheme_a or not scheme_b:
+            st.info("Search and select both Fund A and Fund B above to enable comparison.")
+
+        # ── COMPARISON RESULTS ────────────────────────────────────────────────
+        if compare_btn and scheme_a and scheme_b:
+            with st.status("Fetching fund data...", expanded=True) as status:
+                status.write("📊 Fetching NAV history for Fund A...")
+                df_a     = get_fund_nav_history(scheme_a)
+                detail_a = get_fund_details(scheme_a)
+
+                status.write("📊 Fetching NAV history for Fund B...")
+                df_b     = get_fund_nav_history(scheme_b)
+                detail_b = get_fund_details(scheme_b)
+
+                if df_a.empty or df_b.empty:
+                    st.error("Could not fetch NAV data for one or both funds. "
+                             "Try selecting a different fund.")
+                    st.stop()
+
+                status.write("📐 Calculating returns and risk metrics...")
+                ret_a = calculate_returns(df_a)
+                ret_b = calculate_returns(df_b)
+
+                status.write("🧮 Running SIP and Lump Sum simulations...")
+                sip_a = simulate_sip(df_a, monthly_sip, comp_tenure)
+                sip_b = simulate_sip(df_b, monthly_sip, comp_tenure)
+                ls_a  = simulate_lumpsum(df_a, lumpsum_amt, comp_tenure)
+                ls_b  = simulate_lumpsum(df_b, lumpsum_amt, comp_tenure)
+
+                status.write("🤖 Getting AI comparison...")
+                ai_comparison = get_mf_comparison_analysis(
+                    name_a, name_b, ret_a, ret_b,
+                    sip_a, sip_b, ls_a, ls_b,
+                    comp_tenure, monthly_sip, lumpsum_amt,
+                )
+                status.update(label="Comparison complete!",
+                              state="complete", expanded=False)
+
+            # ── FUND DETAILS ──────────────────────────────────────────────────
+            st.subheader("📋 Fund Details")
+            fd1, fd2 = st.columns(2)
+            with fd1:
+                st.markdown(f"**{name_a}**")
+                if detail_a:
+                    st.caption(f"Fund House: {detail_a.get('fund_house', 'N/A')}")
+                    st.caption(f"Category: {detail_a.get('scheme_type', 'N/A')}")
+                    st.caption(f"Latest NAV: ₹{ret_a.get('latest_nav', 'N/A')}")
+            with fd2:
+                st.markdown(f"**{name_b}**")
+                if detail_b:
+                    st.caption(f"Fund House: {detail_b.get('fund_house', 'N/A')}")
+                    st.caption(f"Category: {detail_b.get('scheme_type', 'N/A')}")
+                    st.caption(f"Latest NAV: ₹{ret_b.get('latest_nav', 'N/A')}")
+
+            st.divider()
+
+            # ── RETURNS COMPARISON TABLE ──────────────────────────────────────
+            st.subheader("📈 Returns Comparison")
+            rows = []
+            for label in ["1Y", "3Y", "5Y"]:
+                va = ret_a.get(label)
+                vb = ret_b.get(label)
+                rows.append({
+                    "Period":   label + " CAGR",
+                    name_a[:30]: f"{va}%" if va is not None else "N/A",
+                    name_b[:30]: f"{vb}%" if vb is not None else "N/A",
+                    "Winner":   ("Fund A ✅" if va and vb and va > vb
+                                 else "Fund B ✅" if va and vb and vb > va
+                                 else "—"),
+                })
+            rows.append({
+                "Period":   "Volatility (annual)",
+                name_a[:30]: f"{ret_a.get('volatility', 'N/A')}%",
+                name_b[:30]: f"{ret_b.get('volatility', 'N/A')}%",
+                "Winner":   ("Fund A ✅"
+                             if ret_a.get("volatility") and ret_b.get("volatility")
+                             and ret_a["volatility"] < ret_b["volatility"]
+                             else "Fund B ✅"
+                             if ret_a.get("volatility") and ret_b.get("volatility")
+                             and ret_b["volatility"] < ret_a["volatility"]
+                             else "—"),
+            })
+            rows.append({
+                "Period":   "Max Drawdown",
+                name_a[:30]: f"{ret_a.get('max_drawdown', 'N/A')}%",
+                name_b[:30]: f"{ret_b.get('max_drawdown', 'N/A')}%",
+                "Winner":   ("Fund A ✅"
+                             if ret_a.get("max_drawdown") and ret_b.get("max_drawdown")
+                             and ret_a["max_drawdown"] > ret_b["max_drawdown"]
+                             else "Fund B ✅"
+                             if ret_a.get("max_drawdown") and ret_b.get("max_drawdown")
+                             and ret_b["max_drawdown"] > ret_a["max_drawdown"]
+                             else "—"),
+            })
+            st.dataframe(rows, use_container_width=True, hide_index=True)
+
+            st.divider()
+
+            # ── NAV CHART ─────────────────────────────────────────────────────
+            st.subheader("📊 NAV History Chart")
+
+            # Normalise to 100 for fair comparison
+            end_date   = min(df_a["date"].iloc[-1], df_b["date"].iloc[-1])
+            start_date = end_date - timedelta(days=int(comp_tenure * 365.25))
+            chart_a = df_a[df_a["date"] >= start_date].copy()
+            chart_b = df_b[df_b["date"] >= start_date].copy()
+
+            if not chart_a.empty and not chart_b.empty:
+                chart_a["norm"] = (chart_a["nav"] / chart_a["nav"].iloc[0]) * 100
+                chart_b["norm"] = (chart_b["nav"] / chart_b["nav"].iloc[0]) * 100
+
+                fig_nav = go.Figure()
+                fig_nav.add_trace(go.Scatter(
+                    x=chart_a["date"], y=chart_a["norm"],
+                    name=name_a[:40],
+                    line=dict(color="#26a69a", width=2),
+                ))
+                fig_nav.add_trace(go.Scatter(
+                    x=chart_b["date"], y=chart_b["norm"],
+                    name=name_b[:40],
+                    line=dict(color="#e74c3c", width=2),
+                ))
+                fig_nav.update_layout(
+                    height=350,
+                    yaxis_title="Growth of ₹100 invested",
+                    xaxis_title="Date",
+                    legend=dict(orientation="h"),
+                    margin=dict(l=0, r=0, t=20, b=0),
+                    paper_bgcolor="rgba(0,0,0,0)",
+                    plot_bgcolor="rgba(0,0,0,0)",
+                )
+                fig_nav.update_xaxes(gridcolor="rgba(128,128,128,0.15)")
+                fig_nav.update_yaxes(gridcolor="rgba(128,128,128,0.15)")
+                st.plotly_chart(fig_nav, use_container_width=True)
+                st.caption(
+                    f"Normalised to 100 at start — shows relative growth "
+                    f"over {comp_tenure} year(s). Higher is better."
+                )
+
+            st.divider()
+
+            # ── SIP SIMULATION ────────────────────────────────────────────────
+            st.subheader(f"💳 SIP Simulation — ₹{monthly_sip:,.0f}/month "
+                         f"for {comp_tenure} year(s)")
+            if sip_a and sip_b:
+                sp1, sp2 = st.columns(2)
+                with sp1:
+                    st.markdown(f"**{name_a[:40]}**")
+                    s1a, s1b, s1c = st.columns(3)
+                    s1a.metric("Invested",    f"₹{sip_a['invested']:,.0f}")
+                    s1b.metric("Current Val", f"₹{sip_a['current_val']:,.0f}",
+                               f"₹{sip_a['current_val'] - sip_a['invested']:+,.0f}")
+                    s1c.metric("CAGR",        f"{sip_a['cagr']}%")
+                with sp2:
+                    st.markdown(f"**{name_b[:40]}**")
+                    s2a, s2b, s2c = st.columns(3)
+                    s2a.metric("Invested",    f"₹{sip_b['invested']:,.0f}")
+                    s2b.metric("Current Val", f"₹{sip_b['current_val']:,.0f}",
+                               f"₹{sip_b['current_val'] - sip_b['invested']:+,.0f}")
+                    s2c.metric("CAGR",        f"{sip_b['cagr']}%")
+            else:
+                st.info("Insufficient NAV history for SIP simulation "
+                        "over the selected tenure.")
+
+            st.divider()
+
+            # ── LUMP SUM SIMULATION ───────────────────────────────────────────
+            st.subheader(f"💰 Lump Sum Simulation — ₹{lumpsum_amt:,.0f} "
+                         f"invested {comp_tenure} year(s) ago")
+            if ls_a and ls_b:
+                lp1, lp2 = st.columns(2)
+                with lp1:
+                    st.markdown(f"**{name_a[:40]}**")
+                    l1a, l1b, l1c = st.columns(3)
+                    l1a.metric("Invested",    f"₹{ls_a['invested']:,.0f}")
+                    l1b.metric("Current Val", f"₹{ls_a['current_val']:,.0f}",
+                               f"₹{ls_a['current_val'] - ls_a['invested']:+,.0f}")
+                    l1c.metric("CAGR",        f"{ls_a['cagr']}%")
+                with lp2:
+                    st.markdown(f"**{name_b[:40]}**")
+                    l2a, l2b, l2c = st.columns(3)
+                    l2a.metric("Invested",    f"₹{ls_b['invested']:,.0f}")
+                    l2b.metric("Current Val", f"₹{ls_b['current_val']:,.0f}",
+                               f"₹{ls_b['current_val'] - ls_b['invested']:+,.0f}")
+                    l2c.metric("CAGR",        f"{ls_b['cagr']}%")
+            else:
+                st.info("Insufficient NAV history for Lump Sum simulation "
+                        "over the selected tenure.")
+
+            st.divider()
+
+            # ── AI COMPARISON ─────────────────────────────────────────────────
+            st.subheader("🤖 AI Comparison & Recommendation")
+            st.markdown(ai_comparison)
+
+            st.divider()
+            st.caption(
+                "NAV data sourced from AMFI India via mftool. "
+                "Past performance is not a guarantee of future returns. "
+                "Not SEBI-registered financial advice."
+            )
 
 
 # ════════════════════════════════════════════════════════════════════════════════
