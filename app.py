@@ -59,28 +59,33 @@ if "chat_history"  not in st.session_state:
 
 
 # ── AUTO-DETECT BEST MODEL ────────────────────────────────────────────────────
-def get_best_model() -> str:
-    preferred = [
-        "gemini-2.0-flash-lite",      # most generous free tier — best for high volume
-        "gemini-2.0-flash-lite-001",
-        "gemini-2.0-flash",           # 1500 RPD
-        "gemini-2.0-flash-001",
-        "gemini-2.5-flash-lite",      # newer but lower quota
+def get_gemini_analysis(
+    company: str, data: dict, tech: dict,
+    news_items: list[dict], buy_price: float = 0.0,
+) -> str:
+    # ... existing prompt building code stays the same ...
+
+    # Try each available model until one works
+    models_to_try = [
+        "gemini-2.0-flash-lite",
+        "gemini-2.0-flash",
+        "gemini-2.5-flash-lite",
         "gemini-2.5-flash",
-        "gemini-1.5-flash",           # fallback
+        "gemini-1.5-flash",
     ]
-    try:
-        available = [
-            m.name.replace("models/", "")
-            for m in genai.list_models()
-            if "generateContent" in m.supported_generation_methods
-        ]
-        for model in preferred:
-            if model in available:
-                return model
-    except Exception:
-        pass
-    return "gemini-2.0-flash-lite"
+
+    for model_name in models_to_try:
+        try:
+            model    = genai.GenerativeModel(model_name)
+            response = model.generate_content(prompt)
+            return response.text
+        except Exception as e:
+            err = str(e)
+            if "429" in err or "quota" in err.lower():
+                continue   # try next model
+            return f"⚠️ Gemini error: {e}"
+
+    return "⚠️ All Gemini models have exceeded their quota. Please try again tomorrow or check your API key at aistudio.google.com/apikey."
 
 MODEL = get_best_model()
 
