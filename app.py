@@ -59,6 +59,7 @@ if "chat_history"  not in st.session_state:
 
 
 # ── AUTO-DETECT BEST MODEL ────────────────────────────────────────────────────
+def get_best_model() -> str:
 def get_gemini_analysis(
     company: str, data: dict, tech: dict,
     news_items: list[dict], buy_price: float = 0.0,
@@ -87,7 +88,7 @@ def get_gemini_analysis(
 
     return "⚠️ All Gemini models have exceeded their quota. Please try again tomorrow or check your API key at aistudio.google.com/apikey."
 
-
+    MODEL = get_best_model()
 
 # ── HELPERS ───────────────────────────────────────────────────────────────────
 def strip_html(text: str) -> str:
